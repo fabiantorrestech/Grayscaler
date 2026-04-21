@@ -76,10 +76,13 @@ class ScheduleReceiver : BroadcastReceiver() {
     }
 
     private fun onApplyPause(context: Context, intent: Intent) {
-        val minutes = intent.getIntExtra(EXTRA_MINUTES, 0)
-        if (minutes <= 0) return
+        val seconds = when {
+            intent.hasExtra(EXTRA_SECONDS) -> intent.getLongExtra(EXTRA_SECONDS, 0)
+            else -> intent.getIntExtra(EXTRA_MINUTES, 0) * 60L
+        }
+        if (seconds <= 0) return
         val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
-        val pauseUntil = System.currentTimeMillis() + minutes * 60 * 1000L
+        val pauseUntil = System.currentTimeMillis() + seconds * 1000L
         prefs.edit().putLong("pause_until", pauseUntil).apply()
         applyGrayscale(context, enable = false)
 
@@ -128,6 +131,7 @@ class ScheduleReceiver : BroadcastReceiver() {
         const val EXTRA_DAY = "day"
         const val EXTRA_ENABLED = "enabled"
         const val EXTRA_MINUTES = "minutes"
+        const val EXTRA_SECONDS = "seconds"
 
         private const val PAUSE_END_REQUEST_CODE = 9999
     }

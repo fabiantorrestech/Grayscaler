@@ -10,16 +10,16 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -48,21 +48,23 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.composed
-import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import androidx.core.content.ContextCompat
-import androidx.core.graphics.drawable.toBitmap
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -154,7 +156,8 @@ private fun AppNavigation(store: AppListStore) {
                 onOpenSchedules = { navController.navigate("schedules") },
                 onOpenOverlayIgnore = { navController.navigate("overlay_ignore") },
                 onOpenPermissions = { navController.navigate("permissions") },
-                onOpenPhotoViewer = { navController.navigate("photo_viewer") }
+                onOpenPhotoViewer = { navController.navigate("photo_viewer") },
+                onOpenWhitelist = { navController.navigate("whitelist") }
             )
         }
         composable("schedules") {
@@ -192,6 +195,9 @@ private fun AppNavigation(store: AppListStore) {
         composable("photo_viewer") {
             PhotoViewerSettingsScreen(onBack = { navController.popBackStack() })
         }
+        composable("whitelist") {
+            WhitelistScreen(store = store, onBack = { navController.popBackStack() })
+        }
     }
 }
 
@@ -202,18 +208,19 @@ private fun MainScreen(
     onOpenSchedules: () -> Unit,
     onOpenOverlayIgnore: () -> Unit,
     onOpenPermissions: () -> Unit,
-    onOpenPhotoViewer: () -> Unit
+    onOpenPhotoViewer: () -> Unit,
+    onOpenWhitelist: () -> Unit
 ) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("grayscaler_prefs", android.content.Context.MODE_PRIVATE) }
 
-    val (apps, setApps) = remember { mutableStateOf(store.apps) }
-    val (whitelist, setWhitelist) = remember { mutableStateOf(store.whitelist) }
     var grayscalerEnabled by remember { mutableStateOf(prefs.getBoolean("grayscaler_enabled", true)) }
     var showHelp by remember { mutableStateOf(false) }
     var appSwitcherMode by remember { mutableStateOf(prefs.getString("app_switcher_mode", "ignore") ?: "ignore") }
     var notifCenterMode by remember { mutableStateOf(prefs.getString("notification_center_mode", "ignore") ?: "ignore") }
     var lockscreenMode by remember { mutableStateOf(prefs.getString("lockscreen_mode", "ignore") ?: "ignore") }
+    var powerMenuMode by remember { mutableStateOf(prefs.getString("power_menu_mode", "disable") ?: "disable") }
+    var inlineReplyMode by remember { mutableStateOf(prefs.getString("inline_reply_mode", "ignore") ?: "ignore") }
 
     Scaffold(
         topBar = {
@@ -311,61 +318,58 @@ private fun MainScreen(
                         prefs.edit().putString("lockscreen_mode", mode).apply()
                     }
                 }
+                Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                    Text(
+                        "Notification Reply (Typing)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 2.dp)
+                    )
+                    Text(
+                        "Applies when typing a reply directly in a notification",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    SystemUiModeToggle(inlineReplyMode) { mode ->
+                        inlineReplyMode = mode
+                        prefs.edit().putString("inline_reply_mode", mode).apply()
+                    }
+                }
+                Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                    Text(
+                        "Power Menu",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 2.dp)
+                    )
+                    Text(
+                        "Disable recommended — keeps emergency button visible",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    SystemUiModeToggle(powerMenuMode) { mode ->
+                        powerMenuMode = mode
+                        prefs.edit().putString("power_menu_mode", mode).apply()
+                    }
+                }
             }
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             Row(
-                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(text = if (whitelist) "Whitelist" else "Blacklist")
-                Switch(
-                    checked = whitelist,
-                    onCheckedChange = {
-                        store.whitelist = it
-                        store.toggledApps = emptySet()
-                        store.invalidate()
-                        setWhitelist(it)
-                        setApps(store.apps)
-                    }
-                )
-            }
-            val listState = rememberLazyListState()
-            Box(modifier = Modifier.fillMaxSize()) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize().verticalScrollbar(listState)
-                ) {
-                    items(apps.size) { appId ->
-                        val (app, enabled) = apps[appId]
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Image(
-                                    bitmap = app.icon.current.toBitmap().asImageBitmap(),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(40.dp)
-                                )
-                                Column(
-                                    modifier = Modifier.weight(1f).padding(start = 16.dp)
-                                ) {
-                                    Text(text = app.appName)
-                                    Text(text = app.packageName, style = MaterialTheme.typography.bodySmall)
-                                }
-                                Switch(
-                                    checked = enabled,
-                                    onCheckedChange = {
-                                        store.toggleApp(app.packageName)
-                                        store.invalidate()
-                                        setApps(store.apps)
-                                    }
-                                )
-                            }
-                        }
-                    }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("App List", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Whitelist / Blacklist settings",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
+                OutlinedButton(onClick = onOpenWhitelist) { Text("Open") }
             }
         }
     }
@@ -425,29 +429,72 @@ private fun SystemUiModeToggle(current: String, onSelect: (String) -> Unit) {
     }
 }
 
-private fun Modifier.verticalScrollbar(
+@Composable
+internal fun VerticalScrollbar(
     state: LazyListState,
-    width: Dp = 4.dp
-): Modifier = composed {
-    val targetAlpha = if (state.isScrollInProgress) 1f else 0f
+    modifier: Modifier = Modifier,
+    thumbHeight: Dp = 48.dp,
+    width: Dp = 12.dp
+) {
+    val coroutineScope = rememberCoroutineScope()
+    var isDragging by remember { mutableStateOf(false) }
+
+    val targetAlpha = if (isDragging || state.isScrollInProgress) 1f else 0.35f
     val alpha by animateFloatAsState(
         targetValue = targetAlpha,
-        animationSpec = tween(durationMillis = if (state.isScrollInProgress) 0 else 800),
+        animationSpec = tween(durationMillis = 300),
         label = "scrollbar_alpha"
     )
-    drawWithContent {
-        drawContent()
+
+    BoxWithConstraints(modifier = modifier) {
+        val thumbHeightPx = with(LocalDensity.current) { thumbHeight.toPx() }
+        val trackHeightPx = constraints.maxHeight.toFloat()
+        val thumbRange = (trackHeightPx - thumbHeightPx).coerceAtLeast(0f)
+
         val layoutInfo = state.layoutInfo
         val totalItems = layoutInfo.totalItemsCount
         val visibleItems = layoutInfo.visibleItemsInfo
-        if (totalItems > 0 && visibleItems.isNotEmpty() && alpha > 0f) {
-            val thumbHeight = size.height * visibleItems.size / totalItems
-            val thumbY = size.height * visibleItems.first().index / totalItems
-            drawRect(
-                color = Color.Gray.copy(alpha = alpha * 0.6f),
-                topLeft = Offset(size.width - width.toPx(), thumbY),
-                size = Size(width.toPx(), thumbHeight)
-            )
+        val scrollableItems = (totalItems - visibleItems.size).coerceAtLeast(1)
+
+        val thumbY = if (visibleItems.isNotEmpty()) {
+            val fraction = visibleItems.first().index.toFloat() / scrollableItems
+            (fraction * thumbRange).coerceIn(0f, thumbRange)
+        } else 0f
+
+        val showScrollbar = totalItems > visibleItems.size
+
+        if (showScrollbar) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(width)
+                    .pointerInput(Unit) {
+                        detectDragGestures(
+                            onDragStart = { isDragging = true },
+                            onDragEnd = { isDragging = false },
+                            onDragCancel = { isDragging = false }
+                        ) { change, dragAmount ->
+                            change.consume()
+                            val info = state.layoutInfo
+                            val total = info.totalItemsCount
+                            val visible = info.visibleItemsInfo
+                            val scrollable = (total - visible.size).coerceAtLeast(1)
+                            val firstIndex = visible.firstOrNull()?.index ?: 0
+                            val currentThumbY = (firstIndex.toFloat() / scrollable) * thumbRange
+                            val newThumbY = (currentThumbY + dragAmount.y).coerceIn(0f, thumbRange)
+                            val newFraction = if (thumbRange > 0f) newThumbY / thumbRange else 0f
+                            val targetIndex = (newFraction * scrollable).roundToInt().coerceIn(0, total - 1)
+                            coroutineScope.launch { state.scrollToItem(targetIndex) }
+                        }
+                    }
+            ) {
+                drawRoundRect(
+                    color = Color.Gray.copy(alpha = alpha),
+                    topLeft = Offset(0f, thumbY),
+                    size = Size(size.width, thumbHeightPx),
+                    cornerRadius = CornerRadius(size.width / 2)
+                )
+            }
         }
     }
 }

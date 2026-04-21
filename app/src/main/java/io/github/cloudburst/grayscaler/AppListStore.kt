@@ -33,7 +33,7 @@ class AppListStore(
                     } catch (e: Exception) {
                         null
                     }
-                }.sortedBy { (entry, _) -> entry.appName }
+                }.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.first.appName })
             }
             return field
         }
