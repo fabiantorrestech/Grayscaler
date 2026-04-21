@@ -1,15 +1,20 @@
 package io.github.cloudburst.grayscaler
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Context
 import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+import android.view.inputmethod.InputMethodManager
 
 class MainService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType == TYPE_WINDOW_STATE_CHANGED) {
             if (event.packageName == null || IGNORED_PACKAGES.contains(event.packageName.toString()))
+                return
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            if (imm.enabledInputMethodList.any { it.packageName == event.packageName.toString() })
                 return
             val store = AppListStore(this)
             store.load()
@@ -42,6 +47,8 @@ class MainService : AccessibilityService() {
         val IGNORED_PACKAGES = listOf(
             "com.android.systemui",
             "com.android.launcher3",
+            "com.quickcursor",
+            "com.google.android.googlequicksearchbox",  // Gemini/Google Search
         )
     }
 }
