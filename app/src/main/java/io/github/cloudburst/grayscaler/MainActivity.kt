@@ -1,6 +1,5 @@
 package io.github.cloudburst.grayscaler
 
-import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -18,27 +17,43 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toBitmap
-import io.github.cloudburst.grayscaler.ShizukuRunner.CommandResultListener
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
 import io.github.cloudburst.grayscaler.ShizukuRunner.Companion.command
 import io.github.cloudburst.grayscaler.ShizukuRunner.Companion.shizukuEnabled
 import io.github.cloudburst.grayscaler.ui.theme.GrayscalerTheme
-import kotlinx.coroutines.sync.Semaphore
 import java.util.concurrent.CyclicBarrier
 import kotlin.concurrent.thread
 
@@ -51,37 +66,40 @@ class MainActivity : ComponentActivity() {
         if (!hasAllPermissions()) {
             if (shizukuEnabled(this)) {
                 thread {
-                    val barrier = CyclicBarrier(if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) 4 else 3)
-                    command("pm grant ${packageName} android.permission.WRITE_SECURE_SETTINGS") { msg, done, error ->
-                        if (error)
-                            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                    val barrier = CyclicBarrier(if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) 5 else 4)
+                    command("pm grant ${packageName} android.permission.WRITE_SECURE_SETTINGS") { msg, _, error ->
+                        if (error) Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                         barrier.await()
                     }
-                    command("pm grant ${packageName} android.permission.PACKAGE_USAGE_STATS") { msg, done, error ->
-                        if (error)
-                            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                    command("pm grant ${packageName} android.permission.PACKAGE_USAGE_STATS") { msg, _, error ->
+                        if (error) Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                         barrier.await()
                     }
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R)
-                        command("pm grant ${packageName} android.permission.QUERY_ALL_PACKAGES") { msg, done, error ->
-                            if (error)
-                                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                        command("pm grant ${packageName} android.permission.QUERY_ALL_PACKAGES") { msg, _, error ->
+                            if (error) Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                             barrier.await()
                         }
+                    command("appops set ${packageName} SYSTEM_ALERT_WINDOW allow") { msg, _, error ->
+                        if (error) Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                        barrier.await()
+                    }
                     barrier.await()
                     runOnUiThread {
                         finish()
                         startActivity(Intent(this, MainActivity::class.java))
                     }
                 }
-
             } else {
-                val packageManager = packageManager
-                val intent = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
-                if (intent != null) {
-                    startActivity(intent)
+                val prefs = getSharedPreferences("grayscaler_prefs", MODE_PRIVATE)
+                val shizukuPkg = prefs.getString("shizuku_package", null)
+                    ?: OverlayIgnoreStore.KNOWN_SHIZUKU_PACKAGES.firstOrNull { pkg ->
+                        try { packageManager.getPackageInfo(pkg, 0); true } catch (e: Exception) { false }
+                    }
+                if (shizukuPkg != null) {
+                    startActivity(packageManager.getLaunchIntentForPackage(shizukuPkg))
                 } else {
-                  startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/")))
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/")))
                 }
                 finish()
             }
@@ -89,11 +107,10 @@ class MainActivity : ComponentActivity() {
 
         store = AppListStore(this)
         store.load()
-        //enableEdgeToEdge()
 
         setContent {
-            MaterialTheme {
-                App(store)
+            GrayscalerTheme {
+                AppNavigation(store)
             }
         }
     }
@@ -104,115 +121,216 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun hasAllPermissions(): Boolean {
-        if (ContextCompat.checkSelfPermission(
-                this,
-                android.Manifest.permission.WRITE_SECURE_SETTINGS
-            ) != PackageManager.PERMISSION_GRANTED
-        )
-            return false
-        if (ContextCompat.checkSelfPermission(
-                this,
-                android.Manifest.permission.PACKAGE_USAGE_STATS
-            ) != PackageManager.PERMISSION_GRANTED
-        )
-            return false
-        if (ContextCompat.checkSelfPermission(
-                this,
-                android.Manifest.permission.QUERY_ALL_PACKAGES
-            ) != PackageManager.PERMISSION_GRANTED && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R
-        )
-            return false
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.WRITE_SECURE_SETTINGS) != PackageManager.PERMISSION_GRANTED) return false
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.PACKAGE_USAGE_STATS) != PackageManager.PERMISSION_GRANTED) return false
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R &&
+            ContextCompat.checkSelfPermission(this, android.Manifest.permission.QUERY_ALL_PACKAGES) != PackageManager.PERMISSION_GRANTED) return false
         return true
+    }
+}
+
+@Composable
+private fun AppNavigation(store: AppListStore) {
+    val navController = rememberNavController()
+    NavHost(navController = navController, startDestination = "main") {
+        composable("main") {
+            MainScreen(
+                store = store,
+                onOpenSchedules = { navController.navigate("schedules") },
+                onOpenOverlayIgnore = { navController.navigate("overlay_ignore") },
+                onOpenPermissions = { navController.navigate("permissions") }
+            )
+        }
+        composable("schedules") {
+            ScheduleScreen(
+                onBack = { navController.popBackStack() },
+                onAddSchedule = { navController.navigate("add_schedule") },
+                onEditSchedule = { schedule ->
+                    navController.currentBackStackEntry?.savedStateHandle?.set("edit_schedule", schedule)
+                    navController.navigate("edit_schedule")
+                }
+            )
+        }
+        composable("add_schedule") {
+            AddEditScheduleScreen(
+                existing = null,
+                onBack = { navController.popBackStack() },
+                onSaved = { navController.popBackStack() }
+            )
+        }
+        composable("edit_schedule") {
+            val schedule = navController.previousBackStackEntry
+                ?.savedStateHandle?.get<Schedule>("edit_schedule")
+            AddEditScheduleScreen(
+                existing = schedule,
+                onBack = { navController.popBackStack() },
+                onSaved = { navController.popBackStack() }
+            )
+        }
+        composable("overlay_ignore") {
+            OverlayIgnoreScreen(onBack = { navController.popBackStack() })
+        }
+        composable("permissions") {
+            PermissionsScreen(onBack = { navController.popBackStack() })
+        }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun App(store: AppListStore) {
+private fun MainScreen(
+    store: AppListStore,
+    onOpenSchedules: () -> Unit,
+    onOpenOverlayIgnore: () -> Unit,
+    onOpenPermissions: () -> Unit
+) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("grayscaler_prefs", android.content.Context.MODE_PRIVATE) }
+
     val (apps, setApps) = remember { mutableStateOf(store.apps) }
     val (whitelist, setWhitelist) = remember { mutableStateOf(store.whitelist) }
-    GrayscalerTheme {
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
-            topBar = {
-                TopAppBar(
-                    title = { Text(text = "Grayscaler") },
-                    actions = {
-                        AccessibilityToggle(
-                            serviceComponentName = ComponentName(
-                                store.context,
-                                MainService::class.java
-                            ),
-                            context = LocalContext.current
-                        )
+    var grayscalerEnabled by remember { mutableStateOf(prefs.getBoolean("grayscaler_enabled", true)) }
+    var showHelp by remember { mutableStateOf(false) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Grayscaler") },
+                actions = {
+                    // Global on/off master switch
+                    Switch(
+                        checked = grayscalerEnabled,
+                        onCheckedChange = { enabled ->
+                            grayscalerEnabled = enabled
+                            prefs.edit().putBoolean("grayscaler_enabled", enabled).apply()
+                            if (!enabled) {
+                                Settings.Secure.putInt(
+                                    context.contentResolver,
+                                    MainService.DISPLAY_DALTONIZER_ENABLED,
+                                    MainService.OFF
+                                )
+                            }
+                        },
+                        modifier = Modifier.padding(end = 4.dp)
+                    )
+                    IconButton(onClick = { showHelp = true }) {
+                        Icon(Icons.Filled.Info, contentDescription = "Shortcut setup help")
+                    }
+                    IconButton(onClick = onOpenSchedules) {
+                        Icon(Icons.Filled.DateRange, contentDescription = "Schedules")
+                    }
+                    IconButton(onClick = onOpenOverlayIgnore) {
+                        Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Ignored overlays")
+                    }
+                    IconButton(onClick = onOpenPermissions) {
+                        Icon(Icons.Filled.Lock, contentDescription = "Permissions")
+                    }
+                }
+            )
+        }
+    ) { innerPadding ->
+        Column(modifier = Modifier.padding(innerPadding)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text = if (whitelist) "Whitelist" else "Blacklist")
+                Switch(
+                    checked = whitelist,
+                    onCheckedChange = {
+                        store.whitelist = it
+                        store.toggledApps = emptySet()
+                        store.invalidate()
+                        setWhitelist(it)
+                        setApps(store.apps)
                     }
                 )
             }
-        ) { innerPadding ->
-            Column(modifier = Modifier.padding(innerPadding)) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(text = if (whitelist) "Whitelist" else "Blacklist")
-                    Switch(
-                        checked = whitelist,
-                        onCheckedChange = {
-                            store.whitelist = it
-                            store.toggledApps = emptySet()
-                            store.invalidate()
-                            setWhitelist(it)
-                            setApps(store.apps)
-                        }
-                    )
-                }
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    items(apps.size) { appId ->
-                        val (app, enabled) = apps[appId]
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                items(apps.size) { appId ->
+                    val (app, enabled) = apps[appId]
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Image(
+                                bitmap = app.icon.current.toBitmap().asImageBitmap(),
+                                contentDescription = null,
+                                modifier = Modifier.size(40.dp)
+                            )
+                            Column(
+                                modifier = Modifier.weight(1f).padding(start = 16.dp)
                             ) {
-                                Image(
-                                    bitmap = app.icon.current.toBitmap().asImageBitmap(),
-                                    contentDescription = null,
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                )
-                                Column(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .padding(start = 16.dp)
-                                ) {
-                                    Text(text = app.appName)
-                                    Text(
-                                        text = app.packageName,
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                }
-                                Switch(
-                                    checked = enabled,
-                                    onCheckedChange = { isChecked ->
-                                        store.toggleApp(app.packageName)
-                                        store.invalidate()
-                                        setApps(store.apps)
-                                    }
-                                )
+                                Text(text = app.appName)
+                                Text(text = app.packageName, style = MaterialTheme.typography.bodySmall)
                             }
+                            Switch(
+                                checked = enabled,
+                                onCheckedChange = {
+                                    store.toggleApp(app.packageName)
+                                    store.invalidate()
+                                    setApps(store.apps)
+                                }
+                            )
                         }
                     }
                 }
             }
         }
+    }
+
+    if (showHelp) {
+        AlertDialog(
+            onDismissRequest = { showHelp = false },
+            title = { Text("Shortcut Setup") },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "Trigger the pause overlay from Key Mapper, Macrodroid, Tasker, or any automation app — including from the lock screen.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    HorizontalDivider()
+                    Text("Broadcast Intent", style = MaterialTheme.typography.labelLarge)
+                    IntentField("Action", "io.github.cloudburst.grayscaler\n.ACTION_PAUSE_GRAYSCALER")
+                    IntentField("Package", "io.github.cloudburst.grayscaler")
+                    IntentField("Class", "io.github.cloudburst.grayscaler\n.ScheduleReceiver")
+                    HorizontalDivider()
+                    Text("Key Mapper", style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        "1. New mapping → your trigger\n2. Add Action → Intent → Send Broadcast\n3. Set Action, Package, and Class as above",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    HorizontalDivider()
+                    Text("Macrodroid / Tasker", style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        "1. New macro → your trigger\n2. Add Action → Send Intent → Broadcast\n3. Set Action and Package as above",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showHelp = false }) { Text("Got it") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun IntentField(label: String, value: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+        )
     }
 }

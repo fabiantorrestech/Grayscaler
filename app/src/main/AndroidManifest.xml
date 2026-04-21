@@ -8,6 +8,9 @@
         tools:ignore="QueryAllPackagesPermission" />
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"
+        tools:ignore="ProtectedPermissions" />
 
     <application
         android:allowBackup="true"
@@ -41,6 +44,24 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <receiver
+            android:name=".ScheduleReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="io.github.cloudburst.grayscaler.ACTION_SCHEDULE_START" />
+                <action android:name="io.github.cloudburst.grayscaler.ACTION_SCHEDULE_END" />
+                <action android:name="io.github.cloudburst.grayscaler.ACTION_SET_ENABLED" />
+                <action android:name="io.github.cloudburst.grayscaler.ACTION_PAUSE_GRAYSCALER" />
+                <action android:name="io.github.cloudburst.grayscaler.ACTION_APPLY_PAUSE" />
+                <action android:name="io.github.cloudburst.grayscaler.ACTION_PAUSE_END" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".PauseOverlayService"
+            android:exported="false" />
 
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
