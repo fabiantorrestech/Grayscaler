@@ -33,7 +33,7 @@ class AppListStore(
                     } catch (e: Exception) {
                         null
                     }
-                }
+                }.sortedBy { (entry, _) -> entry.appName }
             }
             return field
         }

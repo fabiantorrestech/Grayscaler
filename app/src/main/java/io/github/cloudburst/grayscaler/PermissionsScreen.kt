@@ -66,7 +66,12 @@ fun PermissionsScreen(onBack: () -> Unit) {
         ContextCompat.checkSelfPermission(context, android.Manifest.permission.QUERY_ALL_PACKAGES) == PackageManager.PERMISSION_GRANTED
     else true
     val hasOverlay = Settings.canDrawOverlays(context)
-    var accessibilityEnabled by remember { mutableStateOf(false) }
+    var accessibilityEnabled by remember {
+        mutableStateOf(
+            Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+                ?.contains(ComponentName(context, MainService::class.java).flattenToString()) ?: false
+        )
+    }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->

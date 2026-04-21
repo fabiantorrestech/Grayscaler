@@ -8,8 +8,11 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,6 +20,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -27,10 +32,14 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -42,9 +51,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toBitmap
@@ -138,7 +153,8 @@ private fun AppNavigation(store: AppListStore) {
                 store = store,
                 onOpenSchedules = { navController.navigate("schedules") },
                 onOpenOverlayIgnore = { navController.navigate("overlay_ignore") },
-                onOpenPermissions = { navController.navigate("permissions") }
+                onOpenPermissions = { navController.navigate("permissions") },
+                onOpenPhotoViewer = { navController.navigate("photo_viewer") }
             )
         }
         composable("schedules") {
@@ -173,6 +189,9 @@ private fun AppNavigation(store: AppListStore) {
         composable("permissions") {
             PermissionsScreen(onBack = { navController.popBackStack() })
         }
+        composable("photo_viewer") {
+            PhotoViewerSettingsScreen(onBack = { navController.popBackStack() })
+        }
     }
 }
 
@@ -182,7 +201,8 @@ private fun MainScreen(
     store: AppListStore,
     onOpenSchedules: () -> Unit,
     onOpenOverlayIgnore: () -> Unit,
-    onOpenPermissions: () -> Unit
+    onOpenPermissions: () -> Unit,
+    onOpenPhotoViewer: () -> Unit
 ) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("grayscaler_prefs", android.content.Context.MODE_PRIVATE) }
@@ -191,6 +211,9 @@ private fun MainScreen(
     val (whitelist, setWhitelist) = remember { mutableStateOf(store.whitelist) }
     var grayscalerEnabled by remember { mutableStateOf(prefs.getBoolean("grayscaler_enabled", true)) }
     var showHelp by remember { mutableStateOf(false) }
+    var appSwitcherMode by remember { mutableStateOf(prefs.getString("app_switcher_mode", "ignore") ?: "ignore") }
+    var notifCenterMode by remember { mutableStateOf(prefs.getString("notification_center_mode", "ignore") ?: "ignore") }
+    var lockscreenMode by remember { mutableStateOf(prefs.getString("lockscreen_mode", "ignore") ?: "ignore") }
 
     Scaffold(
         topBar = {
@@ -230,6 +253,66 @@ private fun MainScreen(
         }
     ) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding)) {
+            Text(
+                "System UI Behavior",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Photo Viewer", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Per-app auto-disable settings",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    OutlinedButton(onClick = onOpenPhotoViewer) { Text("Open") }
+                }
+                Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                    Text(
+                        "App Switcher",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    SystemUiModeToggle(appSwitcherMode) { mode ->
+                        appSwitcherMode = mode
+                        prefs.edit().putString("app_switcher_mode", mode).apply()
+                    }
+                }
+                Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                    Text(
+                        "Notification Center",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    SystemUiModeToggle(notifCenterMode) { mode ->
+                        notifCenterMode = mode
+                        prefs.edit().putString("notification_center_mode", mode).apply()
+                    }
+                }
+                Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                    Text(
+                        "Lock Screen",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    SystemUiModeToggle(lockscreenMode) { mode ->
+                        lockscreenMode = mode
+                        prefs.edit().putString("lockscreen_mode", mode).apply()
+                    }
+                }
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             Row(
                 modifier = Modifier.fillMaxWidth().padding(16.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -247,33 +330,39 @@ private fun MainScreen(
                     }
                 )
             }
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                items(apps.size) { appId ->
-                    val (app, enabled) = apps[appId]
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Image(
-                                bitmap = app.icon.current.toBitmap().asImageBitmap(),
-                                contentDescription = null,
-                                modifier = Modifier.size(40.dp)
-                            )
-                            Column(
-                                modifier = Modifier.weight(1f).padding(start = 16.dp)
-                            ) {
-                                Text(text = app.appName)
-                                Text(text = app.packageName, style = MaterialTheme.typography.bodySmall)
-                            }
-                            Switch(
-                                checked = enabled,
-                                onCheckedChange = {
-                                    store.toggleApp(app.packageName)
-                                    store.invalidate()
-                                    setApps(store.apps)
+            val listState = rememberLazyListState()
+            Box(modifier = Modifier.fillMaxSize()) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize().verticalScrollbar(listState)
+                ) {
+                    items(apps.size) { appId ->
+                        val (app, enabled) = apps[appId]
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Image(
+                                    bitmap = app.icon.current.toBitmap().asImageBitmap(),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(40.dp)
+                                )
+                                Column(
+                                    modifier = Modifier.weight(1f).padding(start = 16.dp)
+                                ) {
+                                    Text(text = app.appName)
+                                    Text(text = app.packageName, style = MaterialTheme.typography.bodySmall)
                                 }
-                            )
+                                Switch(
+                                    checked = enabled,
+                                    onCheckedChange = {
+                                        store.toggleApp(app.packageName)
+                                        store.invalidate()
+                                        setApps(store.apps)
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -317,6 +406,49 @@ private fun MainScreen(
                 TextButton(onClick = { showHelp = false }) { Text("Got it") }
             }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SystemUiModeToggle(current: String, onSelect: (String) -> Unit) {
+    val options = listOf("ignore" to "Ignore", "enable" to "Enable", "disable" to "Disable")
+    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+        options.forEachIndexed { index, (value, label) ->
+            SegmentedButton(
+                selected = current == value,
+                onClick = { onSelect(value) },
+                shape = SegmentedButtonDefaults.itemShape(index, options.size),
+                label = { Text(label) }
+            )
+        }
+    }
+}
+
+private fun Modifier.verticalScrollbar(
+    state: LazyListState,
+    width: Dp = 4.dp
+): Modifier = composed {
+    val targetAlpha = if (state.isScrollInProgress) 1f else 0f
+    val alpha by animateFloatAsState(
+        targetValue = targetAlpha,
+        animationSpec = tween(durationMillis = if (state.isScrollInProgress) 0 else 800),
+        label = "scrollbar_alpha"
+    )
+    drawWithContent {
+        drawContent()
+        val layoutInfo = state.layoutInfo
+        val totalItems = layoutInfo.totalItemsCount
+        val visibleItems = layoutInfo.visibleItemsInfo
+        if (totalItems > 0 && visibleItems.isNotEmpty() && alpha > 0f) {
+            val thumbHeight = size.height * visibleItems.size / totalItems
+            val thumbY = size.height * visibleItems.first().index / totalItems
+            drawRect(
+                color = Color.Gray.copy(alpha = alpha * 0.6f),
+                topLeft = Offset(size.width - width.toPx(), thumbY),
+                size = Size(width.toPx(), thumbHeight)
+            )
+        }
     }
 }
 
