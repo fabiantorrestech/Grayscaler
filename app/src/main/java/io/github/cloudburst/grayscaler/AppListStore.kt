@@ -4,6 +4,7 @@ import android.app.usage.UsageStats
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Context.USAGE_STATS_SERVICE
+import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import kotlin.collections.mapNotNull
 
@@ -17,14 +18,22 @@ class AppListStore(
     val context: Context
 ) {
 
-    val path = context.filesDir.resolve("apps.txt")
+    private val legacyPath = context.filesDir.resolve("apps.txt")
+    private val whitelistPath = context.filesDir.resolve("apps_whitelist.txt")
+    private val blacklistPath = context.filesDir.resolve("apps_blacklist.txt")
+
     var whitelist: Boolean = true
-    var toggledApps: Set<String> = emptySet()
+    var whitelistedApps: Set<String> = emptySet()
+    var blacklistedApps: Set<String> = emptySet()
+
+    var toggledApps: Set<String>
+        get() = if (whitelist) whitelistedApps else blacklistedApps
+        set(value) { if (whitelist) whitelistedApps = value else blacklistedApps = value }
 
     var apps: List<Pair<AppEntry, Boolean>> = emptyList()
         get() {
             if (field.isEmpty()) {
-                field = (toggledApps + listPackages()).mapNotNull { packageName ->
+                field = (toggledApps + listPackages() + listWebApks()).mapNotNull { packageName ->
                     try {
                         val appInfo = context.packageManager.getApplicationInfo(packageName, 0)
                         val appName = context.packageManager.getApplicationLabel(appInfo).toString()
@@ -40,18 +49,41 @@ class AppListStore(
         private set
 
     fun save() {
-        val stream = path.outputStream().writer()
-        stream.write(if (whitelist) "w\n" else "b\n")
-        toggledApps.forEach { stream.write("$it\n") }
-        stream.close()
+        val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("app_list_whitelist_mode", whitelist).apply()
+        writeApps(whitelistPath, whitelistedApps)
+        writeApps(blacklistPath, blacklistedApps)
+    }
+
+    private fun writeApps(path: java.io.File, apps: Set<String>) {
+        val writer = path.outputStream().writer()
+        apps.forEach { writer.write("$it\n") }
+        writer.close()
     }
 
     fun load() {
-        if (!path.exists()) return
-        val stream = path.inputStream().bufferedReader()
-        whitelist = stream.readLine() != "b"
-        toggledApps = stream.readLines().filter { it.isNotBlank() }.toSet()
-        stream.close()
+        if (legacyPath.exists() && !whitelistPath.exists() && !blacklistPath.exists()) {
+            migrateLegacy()
+            return
+        }
+        val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+        whitelist = prefs.getBoolean("app_list_whitelist_mode", true)
+        whitelistedApps = readApps(whitelistPath)
+        blacklistedApps = readApps(blacklistPath)
+    }
+
+    private fun readApps(path: java.io.File): Set<String> {
+        if (!path.exists()) return emptySet()
+        return path.inputStream().bufferedReader().readLines().filter { it.isNotBlank() }.toSet()
+    }
+
+    private fun migrateLegacy() {
+        val reader = legacyPath.inputStream().bufferedReader()
+        whitelist = reader.readLine() != "b"
+        val apps = reader.readLines().filter { it.isNotBlank() }.toSet()
+        reader.close()
+        if (whitelist) whitelistedApps = apps else blacklistedApps = apps
+        legacyPath.delete()
     }
 
     fun shouldGrayScale(packageName: String): Boolean {
@@ -70,6 +102,21 @@ class AppListStore(
         apps = emptyList()
     }
 
+    private fun listWebApks(): Set<String> {
+        return try {
+            context.packageManager
+                .getInstalledPackages(PackageManager.GET_META_DATA)
+                .filter { pkg ->
+                    pkg.applicationInfo?.metaData
+                        ?.containsKey("org.chromium.webapk.shell_apk.runtimeHost") == true
+                }
+                .map { it.packageName }
+                .toSet()
+        } catch (_: Exception) {
+            emptySet()
+        }
+    }
+
     private fun listPackages() : Set<String> {
         val usageStatsManager = context.getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
         val result = usageStatsManager.queryUsageStats(
@@ -77,7 +124,7 @@ class AppListStore(
             0,
             System.currentTimeMillis()
         )
-            .filter { it.packageName != context.packageName && it.totalTime > 0 }
+            .filter { it.totalTime > 0 }
             .sortedBy { -it.lastTimeUsed }
             .map { it.packageName }
             .toSet()

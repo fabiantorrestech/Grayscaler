@@ -76,6 +76,7 @@ import kotlin.concurrent.thread
 
 class MainActivity : ComponentActivity() {
     lateinit var store: AppListStore
+    lateinit var webShortcutStore: WebShortcutStore
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -125,9 +126,17 @@ class MainActivity : ComponentActivity() {
         store = AppListStore(this)
         store.load()
 
+        webShortcutStore = WebShortcutStore(this)
+        webShortcutStore.load()
+
+        thread {
+            val launcherEntries = loadCCLauncherShortcuts()
+            webShortcutStore.mergeLauncherEntries(launcherEntries)
+        }
+
         setContent {
             GrayscalerTheme {
-                AppNavigation(store)
+                AppNavigation(store, webShortcutStore)
             }
         }
     }
@@ -135,6 +144,39 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         store.save()
+        webShortcutStore.save()
+    }
+
+    private fun loadCCLauncherShortcuts(): List<WebShortcutEntry> {
+        return try {
+            val uri = android.net.Uri.parse("content://app.cclauncher.shortcuts/pinned")
+            val cursor = contentResolver.query(uri, null, null, null, null)
+                ?: return emptyList()
+            val entries = mutableListOf<WebShortcutEntry>()
+            cursor.use {
+                val labelIdx = it.getColumnIndex("label")
+                val urlIdx = it.getColumnIndex("url")
+                val browserPkgIdx = it.getColumnIndex("browser_package")
+                val shortcutIdIdx = it.getColumnIndex("shortcut_id")
+                if (labelIdx < 0 || urlIdx < 0) return@use
+                while (it.moveToNext()) {
+                    val shortcutId = if (shortcutIdIdx >= 0) it.getString(shortcutIdIdx) else ""
+                    val browserPkg = if (browserPkgIdx >= 0) it.getString(browserPkgIdx) else null
+                    entries.add(
+                        WebShortcutEntry(
+                            id = "cclauncher_${shortcutId}_${browserPkg.orEmpty()}",
+                            label = it.getString(labelIdx),
+                            url = it.getString(urlIdx),
+                            browserPackage = browserPkg,
+                            isManual = false
+                        )
+                    )
+                }
+            }
+            entries
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 
     private fun hasAllPermissions(): Boolean {
@@ -147,7 +189,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun AppNavigation(store: AppListStore) {
+private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStore) {
     val navController = rememberNavController()
     NavHost(navController = navController, startDestination = "main") {
         composable("main") {
@@ -157,7 +199,8 @@ private fun AppNavigation(store: AppListStore) {
                 onOpenOverlayIgnore = { navController.navigate("overlay_ignore") },
                 onOpenPermissions = { navController.navigate("permissions") },
                 onOpenPhotoViewer = { navController.navigate("photo_viewer") },
-                onOpenWhitelist = { navController.navigate("whitelist") }
+                onOpenWhitelist = { navController.navigate("whitelist") },
+                onOpenWebShortcuts = { navController.navigate("web_shortcuts") }
             )
         }
         composable("schedules") {
@@ -198,6 +241,9 @@ private fun AppNavigation(store: AppListStore) {
         composable("whitelist") {
             WhitelistScreen(store = store, onBack = { navController.popBackStack() })
         }
+        composable("web_shortcuts") {
+            WebShortcutScreen(store = webShortcutStore, onBack = { navController.popBackStack() })
+        }
     }
 }
 
@@ -209,7 +255,8 @@ private fun MainScreen(
     onOpenOverlayIgnore: () -> Unit,
     onOpenPermissions: () -> Unit,
     onOpenPhotoViewer: () -> Unit,
-    onOpenWhitelist: () -> Unit
+    onOpenWhitelist: () -> Unit,
+    onOpenWebShortcuts: () -> Unit
 ) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("grayscaler_prefs", android.content.Context.MODE_PRIVATE) }
@@ -259,29 +306,32 @@ private fun MainScreen(
             )
         }
     ) { innerPadding ->
-        Column(modifier = Modifier.padding(innerPadding)) {
+        Column(modifier = Modifier.padding(innerPadding).verticalScroll(rememberScrollState())) {
+            // 1. App List
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("App List", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Whitelist / Blacklist settings",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                OutlinedButton(onClick = onOpenWhitelist) { Text("Open") }
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            // 2. OS Events
             Text(
-                "System UI Behavior",
+                "OS Events",
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
             )
             Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Photo Viewer", style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            "Per-app auto-disable settings",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    OutlinedButton(onClick = onOpenPhotoViewer) { Text("Open") }
-                }
                 Column(modifier = Modifier.padding(vertical = 6.dp)) {
                     Text(
                         "App Switcher",
@@ -355,21 +405,39 @@ private fun MainScreen(
                     }
                 }
             }
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            // 3. Photo Viewer
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("App List", style = MaterialTheme.typography.bodyMedium)
+                    Text("Photo Viewer", style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        "Whitelist / Blacklist settings",
+                        "Per-app auto-disable settings",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                OutlinedButton(onClick = onOpenWhitelist) { Text("Open") }
+                OutlinedButton(onClick = onOpenPhotoViewer) { Text("Open") }
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            // 4. Web Shortcuts
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Web Shortcuts", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "PWAs and browser shortcuts",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                OutlinedButton(onClick = onOpenWebShortcuts) { Text("Open") }
             }
         }
     }

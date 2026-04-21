@@ -64,7 +64,6 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit) {
                         checked = whitelist,
                         onCheckedChange = { newValue ->
                             store.whitelist = newValue
-                            store.toggledApps = emptySet()
                             store.invalidate()
                             whitelist = newValue
                             setApps(store.apps)

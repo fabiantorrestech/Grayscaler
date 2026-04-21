@@ -6,13 +6,26 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.net.Uri
 import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.InputMethodManager
 
 class MainService : AccessibilityService() {
+
+    // Package name of the browser currently in foreground, null if not a browser
+    private var currentBrowserPkg: String? = null
+    private var lastUrlCheckTime = 0L
+
+    private val browserPackages: Set<String> by lazy {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("http://example.com"))
+        packageManager.queryIntentActivities(intent, 0)
+            .map { it.activityInfo.packageName }
+            .toSet()
+    }
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -58,6 +71,17 @@ class MainService : AccessibilityService() {
                 "enable" -> enableMonochrome()
                 "disable" -> disableMonochrome()
             }
+            return
+        }
+
+        // URL-based web shortcut matching — debounced, only when a browser is in foreground
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            val browserPkg = currentBrowserPkg ?: return
+            if (event.packageName?.toString() != browserPkg) return
+            val now = System.currentTimeMillis()
+            if (now - lastUrlCheckTime < URL_CHECK_DEBOUNCE_MS) return
+            lastUrlCheckTime = now
+            applyWebShortcutRule(browserPkg)
             return
         }
 
@@ -171,6 +195,48 @@ class MainService : AccessibilityService() {
         val appStore = AppListStore(this)
         appStore.load()
         if (appStore.shouldGrayScale(pkg)) enableMonochrome() else disableMonochrome()
+
+        // Track browser state; immediately probe URL if this is a browser coming to foreground
+        if (pkg in browserPackages) {
+            currentBrowserPkg = pkg
+            lastUrlCheckTime = System.currentTimeMillis()
+            applyWebShortcutRule(pkg)
+        } else {
+            currentBrowserPkg = null
+        }
+    }
+
+    private fun applyWebShortcutRule(browserPkg: String) {
+        val root = rootInActiveWindow ?: return
+        val url = findUrlInNodeTree(root) ?: run { root.recycle(); return }
+        root.recycle()
+        val webStore = WebShortcutStore(this)
+        webStore.load()
+        when (webStore.shouldGrayScale(url)) {
+            true -> enableMonochrome()
+            false -> disableMonochrome()
+            null -> { /* no matching rule — leave current state */ }
+        }
+    }
+
+    private fun findUrlInNodeTree(node: AccessibilityNodeInfo, depth: Int = 0): String? {
+        if (depth > 8) return null
+        val text = node.text?.toString()?.trim() ?: ""
+        val url = when {
+            text.startsWith("http://") || text.startsWith("https://") -> text
+            // Domain-only display (e.g. "twitter.com") — common in Chrome's omnibox
+            text.isNotEmpty() && !text.contains(" ") &&
+                DOMAIN_REGEX.matches(text) -> "https://$text"
+            else -> null
+        }
+        if (url != null) return url
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val result = findUrlInNodeTree(child, depth + 1)
+            child.recycle()
+            if (result != null) return result
+        }
+        return null
     }
 
     override fun onInterrupt() {
@@ -194,6 +260,9 @@ class MainService : AccessibilityService() {
         const val ON = 1
 
         private const val TAG = "Grayscaler"
+        private const val URL_CHECK_DEBOUNCE_MS = 500L
+
+        private val DOMAIN_REGEX = Regex("^[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?\\.[a-zA-Z]{2,}(/\\S*)?$")
 
         private val RECENTS_KEYWORDS = setOf("Recents", "RecentTask", "TaskView", "RecentsActivity")
 
