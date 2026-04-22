@@ -2,12 +2,6 @@ package io.github.cloudburst.grayscaler
 
 import android.content.Context
 
-// TODO (future feature): Each Schedule should optionally carry its own whitelist of apps that
-//  remain in color during that window, or start from a blank whitelist instead of inheriting the
-//  global one. When implementing, add a `customWhitelist: Set<String>?` field to Schedule
-//  (null = use global AppListStore whitelist). ScheduleStore serialization will need a new
-//  section per schedule entry to persist this list.
-
 class ScheduleStore(private val context: Context) {
 
     private val path = context.filesDir.resolve("schedules.txt")
@@ -18,6 +12,13 @@ class ScheduleStore(private val context: Context) {
     var scheduleOverrideActive: Boolean
         get() = prefs.getBoolean("schedule_override_active", false)
         set(value) = prefs.edit().putBoolean("schedule_override_active", value).apply()
+
+    var activeScheduleId: String?
+        get() = prefs.getString("active_schedule_id", null)?.takeIf { it.isNotEmpty() }
+        set(value) = if (value != null)
+            prefs.edit().putString("active_schedule_id", value).apply()
+        else
+            prefs.edit().remove("active_schedule_id").apply()
 
     fun load() {
         schedules.clear()
@@ -63,11 +64,13 @@ class ScheduleStore(private val context: Context) {
         }
     }
 
-    fun isAnyScheduleActiveNow(): Boolean {
+    fun isAnyScheduleActiveNow(): Boolean = findActiveScheduleNow() != null
+
+    fun findActiveScheduleNow(): Schedule? {
         val cal = java.util.Calendar.getInstance()
         val currentDay = cal.get(java.util.Calendar.DAY_OF_WEEK)
         val currentMinutes = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
-        return schedules.any { schedule ->
+        return schedules.firstOrNull { schedule ->
             schedule.enabled &&
             schedule.days.contains(currentDay) &&
             currentMinutes >= schedule.startMinutes() &&
@@ -78,7 +81,9 @@ class ScheduleStore(private val context: Context) {
     private fun serializeLine(s: Schedule): String {
         val days = s.days.joinToString(",")
         val enabled = if (s.enabled) "1" else "0"
-        return "${s.id}|${s.label}|${days}|${s.startHour}|${s.startMinute}|${s.endHour}|${s.endMinute}|${enabled}"
+        val whitelist = s.profileWhitelist.joinToString(",")
+        val blacklist = s.profileBlacklist.joinToString(",")
+        return "${s.id}|${s.label}|${days}|${s.startHour}|${s.startMinute}|${s.endHour}|${s.endMinute}|${enabled}|${s.profileMode}|${whitelist}|${blacklist}"
     }
 
     private fun parseLine(line: String): Schedule? {
@@ -92,7 +97,11 @@ class ScheduleStore(private val context: Context) {
                 startMinute = p[4].toInt(),
                 endHour = p[5].toInt(),
                 endMinute = p[6].toInt(),
-                enabled = p[7] == "1"
+                enabled = p[7] == "1",
+                // fields 8-10 are absent in old format — migrate to global defaults
+                profileMode = if (p.size > 8) p[8] else "global",
+                profileWhitelist = if (p.size > 9 && p[9].isNotBlank()) p[9].split(",").toSet() else emptySet(),
+                profileBlacklist = if (p.size > 10 && p[10].isNotBlank()) p[10].split(",").toSet() else emptySet()
             )
         } catch (e: Exception) {
             null

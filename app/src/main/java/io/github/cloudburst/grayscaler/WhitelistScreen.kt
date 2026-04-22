@@ -14,6 +14,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -23,6 +25,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -33,15 +36,48 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WhitelistScreen(store: AppListStore, onBack: () -> Unit) {
-    var whitelist by remember { mutableStateOf(store.whitelist) }
-    val (apps, setApps) = remember { mutableStateOf(store.apps) }
+fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String? = null) {
+    val context = LocalContext.current
+
+    // When scheduleId is provided, build a local AppListStore pre-loaded from the schedule's
+    // profile so all existing toggle logic works unchanged. On back, flush state to ScheduleStore.
+    data class ScheduleContext(val ss: ScheduleStore, val sched: Schedule, val localStore: AppListStore)
+    val scheduleContext: ScheduleContext? = remember(scheduleId) {
+        if (scheduleId == null) return@remember null
+        val ss = ScheduleStore(context).also { it.load() }
+        val sched = ss.schedules.find { it.id == scheduleId } ?: return@remember null
+        val localStore = AppListStore(context).also { a ->
+            a.whitelist = sched.profileMode != "blacklist"
+            a.whitelistedApps = sched.profileWhitelist
+            a.blacklistedApps = sched.profileBlacklist
+        }
+        ScheduleContext(ss, sched, localStore)
+    }
+
+    val effectiveStore = scheduleContext?.localStore ?: store
+
+    val handleBack: () -> Unit = {
+        scheduleContext?.let { (ss, sched, localStore) ->
+            val updatedMode = if (localStore.whitelist) "whitelist" else "blacklist"
+            ss.update(sched.copy(
+                profileMode = updatedMode,
+                profileWhitelist = localStore.whitelistedApps,
+                profileBlacklist = localStore.blacklistedApps
+            ))
+        }
+        onBack()
+    }
+
+    var whitelist by remember { mutableStateOf(effectiveStore.whitelist) }
+    val (apps, setApps) = remember { mutableStateOf(effectiveStore.apps) }
     var selectedTab by remember { mutableIntStateOf(1) }
+    var showClearConfirm by remember { mutableStateOf(false) }
 
     val tabLabels = if (whitelist) listOf("Whitelisted", "All", "Others") else listOf("Blacklisted", "All", "Others")
     val filteredApps = when (selectedTab) {
@@ -55,18 +91,21 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit) {
             TopAppBar(
                 title = { Text(if (whitelist) "Whitelist" else "Blacklist") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = handleBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showClearConfirm = true }) {
+                        Icon(Icons.Filled.Delete, contentDescription = "Clear list")
+                    }
                     Switch(
                         checked = whitelist,
                         onCheckedChange = { newValue ->
-                            store.whitelist = newValue
-                            store.invalidate()
+                            effectiveStore.whitelist = newValue
+                            effectiveStore.invalidate()
                             whitelist = newValue
-                            setApps(store.apps)
+                            setApps(effectiveStore.apps)
                         },
                         modifier = Modifier.padding(end = 8.dp)
                     )
@@ -111,9 +150,9 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit) {
                                 Switch(
                                     checked = enabled,
                                     onCheckedChange = {
-                                        store.toggleApp(app.packageName)
-                                        store.invalidate()
-                                        setApps(store.apps)
+                                        effectiveStore.toggleApp(app.packageName)
+                                        effectiveStore.invalidate()
+                                        setApps(effectiveStore.apps)
                                     }
                                 )
                             }
@@ -126,5 +165,25 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit) {
                 )
             }
         }
+    }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            title = { Text("Clear list?") },
+            text = { Text("Remove all apps from the ${if (whitelist) "whitelist" else "blacklist"}?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (whitelist) effectiveStore.whitelistedApps = emptySet()
+                    else effectiveStore.blacklistedApps = emptySet()
+                    effectiveStore.invalidate()
+                    setApps(effectiveStore.apps)
+                    showClearConfirm = false
+                }) { Text("Clear") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirm = false }) { Text("Cancel") }
+            }
+        )
     }
 }

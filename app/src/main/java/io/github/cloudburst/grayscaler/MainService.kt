@@ -5,14 +5,11 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.SharedPreferences
 import android.net.Uri
-import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
 import android.view.accessibility.AccessibilityNodeInfo
-import android.view.inputmethod.InputMethodManager
 
 class MainService : AccessibilityService() {
 
@@ -33,14 +30,12 @@ class MainService : AccessibilityService() {
             when (intent.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     when (prefs.getString("lockscreen_mode", "ignore")) {
-                        "enable" -> enableMonochrome()
-                        "disable" -> disableMonochrome()
+                        "enable" -> GrayscaleStateManager.applyToSystem(context, GrayscaleStateManager.Decision.ENABLE)
+                        "disable" -> GrayscaleStateManager.applyToSystem(context, GrayscaleStateManager.Decision.DISABLE)
                     }
                 }
                 Intent.ACTION_USER_PRESENT -> {
-                    val pkg = prefs.getString("last_foreground_pkg", null) ?: return
-                    val cls = prefs.getString("last_foreground_class", "") ?: ""
-                    handleForegroundApp(pkg, cls, prefs)
+                    GrayscaleStateManager.invalidate(context)
                 }
             }
         }
@@ -68,8 +63,8 @@ class MainService : AccessibilityService() {
             if (!INLINE_REPLY_KEYWORDS.any { className.contains(it, ignoreCase = true) }) return
             val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
             when (prefs.getString("inline_reply_mode", "ignore")) {
-                "enable" -> enableMonochrome()
-                "disable" -> disableMonochrome()
+                "enable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE)
+                "disable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
             }
             return
         }
@@ -113,29 +108,29 @@ class MainService : AccessibilityService() {
         when {
             isRecents -> {
                 when (prefs.getString("app_switcher_mode", "ignore")) {
-                    "enable" -> enableMonochrome()
-                    "disable" -> disableMonochrome()
+                    "enable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE)
+                    "disable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
                 }
                 return
             }
             isNotifShade -> {
                 when (prefs.getString("notification_center_mode", "ignore")) {
-                    "enable" -> enableMonochrome()
-                    "disable" -> disableMonochrome()
+                    "enable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE)
+                    "disable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
                 }
                 return
             }
             isLockscreen -> {
                 when (prefs.getString("lockscreen_mode", "ignore")) {
-                    "enable" -> enableMonochrome()
-                    "disable" -> disableMonochrome()
+                    "enable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE)
+                    "disable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
                 }
                 return
             }
             isPowerMenu -> {
                 when (prefs.getString("power_menu_mode", "disable")) {
-                    "enable" -> enableMonochrome()
-                    "disable" -> disableMonochrome()
+                    "enable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE)
+                    "disable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
                 }
                 return
             }
@@ -147,54 +142,13 @@ class MainService : AccessibilityService() {
             .putString("last_foreground_pkg", pkg)
             .putString("last_foreground_class", className)
             .apply()
-        handleForegroundApp(pkg, className, prefs)
+        handleForegroundApp(pkg, className)
     }
 
-    private fun handleForegroundApp(pkg: String, className: String, prefs: SharedPreferences) {
-        // Photo viewer auto-disable — overrides all other rules
-        val photoStore = PhotoViewerStore(this)
-        if (photoStore.masterEnabled && photoStore.matches(pkg, className)) {
-            disableMonochrome()
-            return
-        }
-
-        // User-managed ignore list (includes system ignores + Gemini group + user additions)
-        val ignoreStore = OverlayIgnoreStore(this)
-        ignoreStore.load()
-        if (ignoreStore.effectiveIgnoreList().contains(pkg)) return
-
-        // Skip keyboard/IME packages
-        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        if (imm.enabledInputMethodList.any { it.packageName == pkg }) return
-
-        // Pause active — grayscale off
-        val pauseUntil = prefs.getLong("pause_until", 0L)
-        if (pauseUntil > System.currentTimeMillis()) {
-            disableMonochrome()
-            return
-        }
-
-        // Global switch off — grayscale off
-        val globalEnabled = prefs.getBoolean("grayscaler_enabled", true)
-        if (!globalEnabled) {
-            disableMonochrome()
-            return
-        }
-
-        // Active schedule — force grayscale on (whitelist still applies per-app below)
-        val scheduleStore = ScheduleStore(this)
-        scheduleStore.load()
-        if (scheduleStore.scheduleOverrideActive) {
-            val appStore = AppListStore(this)
-            appStore.load()
-            if (appStore.shouldGrayScale(pkg)) enableMonochrome() else disableMonochrome()
-            return
-        }
-
-        // Default whitelist/blacklist behavior
-        val appStore = AppListStore(this)
-        appStore.load()
-        if (appStore.shouldGrayScale(pkg)) enableMonochrome() else disableMonochrome()
+    private fun handleForegroundApp(pkg: String, className: String) {
+        val decision = GrayscaleStateManager.evaluate(pkg, className, this)
+        GrayscaleStateManager.applyToSystem(this, decision)
+        if (decision == GrayscaleStateManager.Decision.SKIP) return
 
         // Track browser state; immediately probe URL if this is a browser coming to foreground
         if (pkg in browserPackages) {
@@ -213,8 +167,8 @@ class MainService : AccessibilityService() {
         val webStore = WebShortcutStore(this)
         webStore.load()
         when (webStore.shouldGrayScale(url)) {
-            true -> enableMonochrome()
-            false -> disableMonochrome()
+            true -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE)
+            false -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
             null -> { /* no matching rule — leave current state */ }
         }
     }
@@ -240,16 +194,7 @@ class MainService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
-        disableMonochrome()
-    }
-
-    private fun enableMonochrome() {
-        Settings.Secure.putInt(contentResolver, DISPLAY_DALTONIZER, MONOCHROME)
-        Settings.Secure.putInt(contentResolver, DISPLAY_DALTONIZER_ENABLED, ON)
-    }
-
-    private fun disableMonochrome() {
-        Settings.Secure.putInt(contentResolver, DISPLAY_DALTONIZER_ENABLED, OFF)
+        GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
     }
 
     companion object {

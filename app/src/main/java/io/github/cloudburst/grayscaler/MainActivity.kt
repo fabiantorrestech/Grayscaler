@@ -4,7 +4,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
-import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -164,6 +163,7 @@ class MainActivity : ComponentActivity() {
         super.onPause()
         store.save()
         webShortcutStore.save()
+        GrayscaleStateManager.invalidate(this)
     }
 
     private fun loadCCLauncherShortcuts(): List<WebShortcutEntry> {
@@ -237,7 +237,8 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
             AddEditScheduleScreen(
                 existing = null,
                 onBack = { navController.popBackStack() },
-                onSaved = { navController.popBackStack() }
+                onSaved = { navController.popBackStack() },
+                onOpenAppList = null
             )
         }
         composable("edit_schedule") {
@@ -246,7 +247,16 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
             AddEditScheduleScreen(
                 existing = schedule,
                 onBack = { navController.popBackStack() },
-                onSaved = { navController.popBackStack() }
+                onSaved = { navController.popBackStack() },
+                onOpenAppList = { scheduleId -> navController.navigate("schedule_whitelist/$scheduleId") }
+            )
+        }
+        composable("schedule_whitelist/{scheduleId}") { backStackEntry ->
+            val scheduleId = backStackEntry.arguments?.getString("scheduleId") ?: return@composable
+            WhitelistScreen(
+                store = store,
+                onBack = { navController.popBackStack() },
+                scheduleId = scheduleId
             )
         }
         composable("overlay_ignore") {
@@ -316,13 +326,7 @@ private fun MainScreen(
                         onCheckedChange = { enabled ->
                             grayscalerEnabled = enabled
                             prefs.edit().putBoolean("grayscaler_enabled", enabled).apply()
-                            if (!enabled) {
-                                Settings.Secure.putInt(
-                                    context.contentResolver,
-                                    MainService.DISPLAY_DALTONIZER_ENABLED,
-                                    MainService.OFF
-                                )
-                            }
+                            GrayscaleStateManager.invalidate(context)
                         },
                         modifier = Modifier.padding(end = 4.dp)
                     )
@@ -350,7 +354,7 @@ private fun MainScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("App List", style = MaterialTheme.typography.bodyMedium)
+                    Text("Global App List", style = MaterialTheme.typography.bodyMedium)
                     Text(
                         "Whitelist / Blacklist settings",
                         style = MaterialTheme.typography.bodySmall,

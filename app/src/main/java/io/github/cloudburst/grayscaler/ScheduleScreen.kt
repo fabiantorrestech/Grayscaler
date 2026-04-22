@@ -141,6 +141,15 @@ private fun ScheduleCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Text(
+                    when (schedule.profileMode) {
+                        "whitelist" -> "Whitelist · ${schedule.profileWhitelist.size} apps"
+                        "blacklist" -> "Blacklist · ${schedule.profileBlacklist.size} apps"
+                        else -> "Global List"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
             Switch(checked = schedule.enabled, onCheckedChange = onToggle)
             IconButton(onClick = onDelete) {

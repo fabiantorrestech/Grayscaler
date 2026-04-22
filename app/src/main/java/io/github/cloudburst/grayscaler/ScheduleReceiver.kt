@@ -8,7 +8,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
-import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import java.text.SimpleDateFormat
@@ -35,23 +34,24 @@ class ScheduleReceiver : BroadcastReceiver() {
         store.load()
         val manager = ScheduleManager(context)
         manager.registerAll(store.schedules)
-        // Re-evaluate current state on boot
-        if (store.isAnyScheduleActiveNow()) {
+        val activeSchedule = store.findActiveScheduleNow()
+        if (activeSchedule != null) {
             store.scheduleOverrideActive = true
-            applyGrayscale(context, enable = true)
+            store.activeScheduleId = activeSchedule.id
         }
+        GrayscaleStateManager.invalidate(context)
     }
 
     private fun onScheduleStart(context: Context, intent: Intent) {
         val scheduleId = intent.getStringExtra(EXTRA_SCHEDULE_ID) ?: return
-        val day = intent.getIntExtra(EXTRA_DAY, -1)
         val store = ScheduleStore(context)
         store.load()
         val schedule = store.schedules.find { it.id == scheduleId } ?: return
         if (!schedule.enabled) return
 
         store.scheduleOverrideActive = true
-        applyGrayscale(context, enable = true)
+        store.activeScheduleId = scheduleId
+        GrayscaleStateManager.invalidate(context)
 
         // Re-register next week's alarm for this day
         ScheduleManager(context).register(schedule)
@@ -59,16 +59,15 @@ class ScheduleReceiver : BroadcastReceiver() {
 
     private fun onScheduleEnd(context: Context, intent: Intent) {
         val scheduleId = intent.getStringExtra(EXTRA_SCHEDULE_ID) ?: return
-        val day = intent.getIntExtra(EXTRA_DAY, -1)
         val store = ScheduleStore(context)
         store.load()
         val schedule = store.schedules.find { it.id == scheduleId } ?: return
 
-        // Only deactivate override if no other schedule is currently active
         if (!store.isAnyScheduleActiveNow()) {
             store.scheduleOverrideActive = false
-            applyGrayscale(context, enable = false)
+            store.activeScheduleId = null
         }
+        GrayscaleStateManager.invalidate(context)
 
         ScheduleManager(context).register(schedule)
     }
@@ -77,7 +76,7 @@ class ScheduleReceiver : BroadcastReceiver() {
         val enabled = intent.getBooleanExtra(EXTRA_ENABLED, true)
         val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
         prefs.edit().putBoolean("grayscaler_enabled", enabled).apply()
-        if (!enabled) applyGrayscale(context, enable = false)
+        GrayscaleStateManager.invalidate(context)
     }
 
     private fun onPauseGrayscaler(context: Context) {
@@ -100,7 +99,7 @@ class ScheduleReceiver : BroadcastReceiver() {
         cancelNotifications(context)
 
         prefs.edit().putLong("pause_until", pauseUntil).apply()
-        applyGrayscale(context, enable = false)
+        GrayscaleStateManager.invalidate(context)
 
         // Schedule alarm to end the pause
         val endIntent = Intent(context, ScheduleReceiver::class.java).apply {
@@ -124,13 +123,7 @@ class ScheduleReceiver : BroadcastReceiver() {
         cancelPauseNotifyAlarm(context)
         cancelNotifications(context)
 
-        // Re-evaluate: if a schedule is active, re-enable grayscale
-        val store = ScheduleStore(context)
-        store.load()
-        val globalEnabled = prefs.getBoolean("grayscaler_enabled", true)
-        if (globalEnabled && store.isAnyScheduleActiveNow()) {
-            applyGrayscale(context, enable = true)
-        }
+        GrayscaleStateManager.invalidate(context)
     }
 
     private fun onPauseNotifyCountdown(context: Context, intent: Intent) {
@@ -263,15 +256,6 @@ class ScheduleReceiver : BroadcastReceiver() {
                 context, android.Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
         } else true
-    }
-
-    private fun applyGrayscale(context: Context, enable: Boolean) {
-        if (enable) {
-            Settings.Secure.putInt(context.contentResolver, MainService.DISPLAY_DALTONIZER, MainService.MONOCHROME)
-            Settings.Secure.putInt(context.contentResolver, MainService.DISPLAY_DALTONIZER_ENABLED, MainService.ON)
-        } else {
-            Settings.Secure.putInt(context.contentResolver, MainService.DISPLAY_DALTONIZER_ENABLED, MainService.OFF)
-        }
     }
 
     companion object {

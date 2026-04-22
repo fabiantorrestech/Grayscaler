@@ -1,5 +1,6 @@
 package io.github.cloudburst.grayscaler
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -12,13 +13,17 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -27,19 +32,30 @@ import androidx.compose.material3.TimePicker
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import java.util.Calendar
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun AddEditScheduleScreen(existing: Schedule? = null, onBack: () -> Unit, onSaved: () -> Unit) {
+fun AddEditScheduleScreen(
+    existing: Schedule? = null,
+    onBack: () -> Unit,
+    onSaved: () -> Unit,
+    onOpenAppList: ((String) -> Unit)? = null
+) {
     val context = LocalContext.current
     val store = remember { ScheduleStore(context).also { it.load() } }
 
@@ -57,10 +73,50 @@ fun AddEditScheduleScreen(existing: Schedule? = null, onBack: () -> Unit, onSave
         is24Hour = false
     )
 
+    // Profile state — initialized from existing schedule, reloaded when returning from WhitelistScreen
+    var profileMode by remember { mutableStateOf(existing?.profileMode ?: "global") }
+    var profileWhitelist by remember { mutableStateOf(existing?.profileWhitelist ?: emptySet<String>()) }
+    var profileBlacklist by remember { mutableStateOf(existing?.profileBlacklist ?: emptySet<String>()) }
+
+    // Reload profile from ScheduleStore whenever this screen resumes (e.g. after returning from
+    // the per-schedule WhitelistScreen where the user may have changed the app list or mode).
+    if (existing != null) {
+        val lifecycleOwner = LocalLifecycleOwner.current
+        DisposableEffect(lifecycleOwner) {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    store.load()
+                    val reloaded = store.schedules.find { it.id == existing.id }
+                    if (reloaded != null) {
+                        profileMode = reloaded.profileMode
+                        profileWhitelist = reloaded.profileWhitelist
+                        profileBlacklist = reloaded.profileBlacklist
+                    }
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        }
+    }
+
+    // App list section UI state
+    var appListExpanded by remember { mutableStateOf(false) }
+    var showImportSchedulePicker by remember { mutableStateOf(false) }
+    var pendingImportSchedule by remember { mutableStateOf<Schedule?>(null) }
+    var showImportModePicker by remember { mutableStateOf(false) }
+    var showClearConfirm by remember { mutableStateOf(false) }
+
     var showStartPicker by remember { mutableStateOf(false) }
     var showEndPicker by remember { mutableStateOf(false) }
     var conflictSchedule by remember { mutableStateOf<Schedule?>(null) }
     var validationError by remember { mutableStateOf<String?>(null) }
+
+    // Saves import changes to ScheduleStore immediately (edit mode only).
+    fun persistProfileIfEditing(newMode: String = profileMode, newWl: Set<String> = profileWhitelist, newBl: Set<String> = profileBlacklist) {
+        if (existing != null) {
+            store.update(existing.copy(profileMode = newMode, profileWhitelist = newWl, profileBlacklist = newBl))
+        }
+    }
 
     val dayLabels = listOf(
         Calendar.MONDAY to "Mon",
@@ -134,6 +190,97 @@ fun AddEditScheduleScreen(existing: Schedule? = null, onBack: () -> Unit, onSave
                 }
             }
 
+            HorizontalDivider()
+
+            // App List row
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("App List", style = MaterialTheme.typography.labelLarge)
+                        Text(
+                            when (profileMode) {
+                                "whitelist" -> "Whitelist · ${profileWhitelist.size} apps"
+                                "blacklist" -> "Blacklist · ${profileBlacklist.size} apps"
+                                else -> "Global List"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = { appListExpanded = !appListExpanded }) {
+                        Icon(
+                            if (appListExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                            contentDescription = "Expand app list options"
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { existing?.id?.let { onOpenAppList?.invoke(it) } },
+                        enabled = existing != null && onOpenAppList != null
+                    ) { Text("Open") }
+                }
+
+                AnimatedVisibility(visible = appListExpanded) {
+                    Column(
+                        modifier = Modifier
+                            .padding(start = 16.dp, top = 8.dp, bottom = 4.dp)
+                            .fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("Populate from:", style = MaterialTheme.typography.labelMedium)
+
+                        // Option 1: Import from Global App List
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Global App List", style = MaterialTheme.typography.bodySmall)
+                            OutlinedButton(onClick = {
+                                val appListStore = AppListStore(context).also { it.load() }
+                                profileWhitelist = appListStore.whitelistedApps
+                                profileBlacklist = appListStore.blacklistedApps
+                                persistProfileIfEditing(newWl = profileWhitelist, newBl = profileBlacklist)
+                                appListExpanded = false
+                            }) { Text("Import") }
+                        }
+
+                        // Option 2: Import from Existing Schedule
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Existing Schedule", style = MaterialTheme.typography.bodySmall)
+                            OutlinedButton(onClick = { showImportSchedulePicker = true }) { Text("Import") }
+                        }
+
+                        // Option 3: Clear current mode's list
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Clear ${when (profileMode) { "whitelist" -> "Whitelist"; "blacklist" -> "Blacklist"; else -> "lists" }}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            OutlinedButton(onClick = { showClearConfirm = true }) { Text("Clear") }
+                        }
+
+                        Button(
+                            onClick = { appListExpanded = false },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Confirm") }
+                    }
+                }
+            }
+
+            HorizontalDivider()
+
             validationError?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
@@ -153,7 +300,10 @@ fun AddEditScheduleScreen(existing: Schedule? = null, onBack: () -> Unit, onSave
                         startHour = startState.hour,
                         startMinute = startState.minute,
                         endHour = endState.hour,
-                        endMinute = endState.minute
+                        endMinute = endState.minute,
+                        profileMode = profileMode,
+                        profileWhitelist = profileWhitelist,
+                        profileBlacklist = profileBlacklist
                     )
                     val conflict = store.conflictsWith(candidate)
                     if (conflict != null) { conflictSchedule = conflict; return@Button }
@@ -202,6 +352,123 @@ fun AddEditScheduleScreen(existing: Schedule? = null, onBack: () -> Unit, onSave
                 },
                 confirmButton = {
                     TextButton(onClick = { conflictSchedule = null }) { Text("OK") }
+                }
+            )
+        }
+
+        // Import from schedule: picker
+        if (showImportSchedulePicker) {
+            val otherSchedules = store.schedules.filter { it.id != existing?.id }
+            AlertDialog(
+                onDismissRequest = { showImportSchedulePicker = false },
+                title = { Text("Select Schedule") },
+                text = {
+                    Column {
+                        if (otherSchedules.isEmpty()) {
+                            Text("No other schedules available.")
+                        } else {
+                            otherSchedules.forEach { sched ->
+                                TextButton(
+                                    onClick = {
+                                        pendingImportSchedule = sched
+                                        showImportSchedulePicker = false
+                                        showImportModePicker = true
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text(sched.label) }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { showImportSchedulePicker = false }) { Text("Cancel") }
+                }
+            )
+        }
+
+        // Import from schedule: whitelist or blacklist choice
+        pendingImportSchedule?.let { sourceSched ->
+            if (showImportModePicker) {
+                AlertDialog(
+                    onDismissRequest = { showImportModePicker = false; pendingImportSchedule = null },
+                    title = { Text("Import from \"${sourceSched.label}\"") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                "Which list? (current mode highlighted)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            TextButton(
+                                onClick = {
+                                    when (profileMode) {
+                                        "whitelist" -> profileWhitelist = sourceSched.profileWhitelist
+                                        "blacklist" -> profileBlacklist = sourceSched.profileWhitelist
+                                        else -> profileWhitelist = sourceSched.profileWhitelist
+                                    }
+                                    persistProfileIfEditing()
+                                    showImportModePicker = false
+                                    pendingImportSchedule = null
+                                    appListExpanded = false
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    "Whitelist · ${sourceSched.profileWhitelist.size} apps",
+                                    fontWeight = if (profileMode == "whitelist") FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
+                            TextButton(
+                                onClick = {
+                                    when (profileMode) {
+                                        "whitelist" -> profileWhitelist = sourceSched.profileBlacklist
+                                        "blacklist" -> profileBlacklist = sourceSched.profileBlacklist
+                                        else -> profileBlacklist = sourceSched.profileBlacklist
+                                    }
+                                    persistProfileIfEditing()
+                                    showImportModePicker = false
+                                    pendingImportSchedule = null
+                                    appListExpanded = false
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    "Blacklist · ${sourceSched.profileBlacklist.size} apps",
+                                    fontWeight = if (profileMode == "blacklist") FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
+                        }
+                    },
+                    confirmButton = {},
+                    dismissButton = {
+                        TextButton(onClick = { showImportModePicker = false; pendingImportSchedule = null }) { Text("Cancel") }
+                    }
+                )
+            }
+        }
+
+        // Clear current mode's list
+        if (showClearConfirm) {
+            val modeLabel = when (profileMode) { "whitelist" -> "Whitelist"; "blacklist" -> "Blacklist"; else -> "both lists" }
+            AlertDialog(
+                onDismissRequest = { showClearConfirm = false },
+                title = { Text("Clear $modeLabel?") },
+                text = { Text("Remove all apps from the $modeLabel?") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        when (profileMode) {
+                            "whitelist" -> profileWhitelist = emptySet()
+                            "blacklist" -> profileBlacklist = emptySet()
+                            else -> { profileWhitelist = emptySet(); profileBlacklist = emptySet() }
+                        }
+                        persistProfileIfEditing()
+                        showClearConfirm = false
+                        appListExpanded = false
+                    }) { Text("Clear") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showClearConfirm = false }) { Text("Cancel") }
                 }
             )
         }
