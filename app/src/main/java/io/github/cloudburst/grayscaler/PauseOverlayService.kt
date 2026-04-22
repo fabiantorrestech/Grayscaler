@@ -113,6 +113,17 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                     var customValue by remember { mutableStateOf("") }
                     var unitExpanded by remember { mutableStateOf(false) }
                     var selectedUnit by remember { mutableStateOf("Minutes") }
+                    var confirmingPauseSeconds by remember { mutableStateOf<Long?>(null) }
+
+                    val applyPauseOrConfirm: (Long) -> Unit = { seconds ->
+                        val activePauseUntil = prefs.getLong("pause_until", 0L)
+                        if (activePauseUntil > System.currentTimeMillis()) {
+                            confirmingPauseSeconds = seconds
+                        } else {
+                            applyPause(seconds)
+                            dismiss()
+                        }
+                    }
 
                     Box(
                         modifier = Modifier
@@ -138,6 +149,25 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                 modifier = Modifier.padding(24.dp),
                                 verticalArrangement = Arrangement.spacedBy(16.dp)
                             ) {
+                                if (confirmingPauseSeconds != null) {
+                                    Text("Replace active pause?", style = MaterialTheme.typography.titleLarge)
+                                    Text(
+                                        "A pause is already active. Replace it with the new duration?",
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+                                    ) {
+                                        TextButton(onClick = { confirmingPauseSeconds = null }) { Text("Cancel") }
+                                        Button(onClick = {
+                                            applyPause(confirmingPauseSeconds!!)
+                                            dismiss()
+                                        }) { Text("Replace") }
+                                    }
+                                    return@Column
+                                }
+
                                 Text(
                                     "Pause Grayscaler",
                                     style = MaterialTheme.typography.titleLarge
@@ -205,7 +235,7 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                 ) {
                                     row1.forEach { (label, seconds) ->
                                         FilledTonalButton(
-                                            onClick = { applyPause(seconds); dismiss() },
+                                            onClick = { applyPauseOrConfirm(seconds) },
                                             modifier = Modifier.weight(1f),
                                             contentPadding = PaddingValues(4.dp)
                                         ) {
@@ -219,7 +249,7 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                 ) {
                                     row2.forEach { (label, seconds) ->
                                         FilledTonalButton(
-                                            onClick = { applyPause(seconds); dismiss() },
+                                            onClick = { applyPauseOrConfirm(seconds) },
                                             modifier = Modifier.weight(1f),
                                             contentPadding = PaddingValues(4.dp)
                                         ) {
@@ -290,7 +320,7 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                                 "Minutes" -> value * 60L
                                                 else -> value
                                             }
-                                            if (seconds > 0) { applyPause(seconds); dismiss() }
+                                            if (seconds > 0) applyPauseOrConfirm(seconds)
                                         }
                                     ) { Text("Apply") }
                                 }

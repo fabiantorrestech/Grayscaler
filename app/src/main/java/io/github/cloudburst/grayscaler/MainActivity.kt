@@ -29,6 +29,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -129,6 +130,24 @@ class MainActivity : ComponentActivity() {
         webShortcutStore = WebShortcutStore(this)
         webShortcutStore.load()
 
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            val nm = getSystemService(android.app.NotificationManager::class.java)
+            nm.createNotificationChannel(
+                android.app.NotificationChannel(
+                    ScheduleReceiver.CHANNEL_ID_STATIC,
+                    "Grayscaler Paused",
+                    android.app.NotificationManager.IMPORTANCE_LOW
+                )
+            )
+            nm.createNotificationChannel(
+                android.app.NotificationChannel(
+                    ScheduleReceiver.CHANNEL_ID_COUNTDOWN,
+                    "Grayscaler Countdown",
+                    android.app.NotificationManager.IMPORTANCE_LOW
+                )
+            )
+        }
+
         thread {
             val launcherEntries = loadCCLauncherShortcuts()
             webShortcutStore.mergeLauncherEntries(launcherEntries)
@@ -200,7 +219,8 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
                 onOpenPermissions = { navController.navigate("permissions") },
                 onOpenPhotoViewer = { navController.navigate("photo_viewer") },
                 onOpenWhitelist = { navController.navigate("whitelist") },
-                onOpenWebShortcuts = { navController.navigate("web_shortcuts") }
+                onOpenWebShortcuts = { navController.navigate("web_shortcuts") },
+                onOpenPause = { navController.navigate("pause") }
             )
         }
         composable("schedules") {
@@ -244,6 +264,12 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
         composable("web_shortcuts") {
             WebShortcutScreen(store = webShortcutStore, onBack = { navController.popBackStack() })
         }
+        composable("pause") {
+            PauseScreen(
+                onBack = { navController.popBackStack() },
+                onOpenPermissions = { navController.navigate("permissions") }
+            )
+        }
     }
 }
 
@@ -256,13 +282,23 @@ private fun MainScreen(
     onOpenPermissions: () -> Unit,
     onOpenPhotoViewer: () -> Unit,
     onOpenWhitelist: () -> Unit,
-    onOpenWebShortcuts: () -> Unit
+    onOpenWebShortcuts: () -> Unit,
+    onOpenPause: () -> Unit
 ) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("grayscaler_prefs", android.content.Context.MODE_PRIVATE) }
 
     var grayscalerEnabled by remember { mutableStateOf(prefs.getBoolean("grayscaler_enabled", true)) }
     var showHelp by remember { mutableStateOf(false) }
+    var showNotifPrompt by remember {
+        mutableStateOf(
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.POST_NOTIFICATIONS
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED &&
+            !prefs.getBoolean("notif_permission_prompted", false)
+        )
+    }
     var appSwitcherMode by remember { mutableStateOf(prefs.getString("app_switcher_mode", "ignore") ?: "ignore") }
     var notifCenterMode by remember { mutableStateOf(prefs.getString("notification_center_mode", "ignore") ?: "ignore") }
     var lockscreenMode by remember { mutableStateOf(prefs.getString("lockscreen_mode", "ignore") ?: "ignore") }
@@ -299,8 +335,8 @@ private fun MainScreen(
                     IconButton(onClick = onOpenOverlayIgnore) {
                         Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Ignored overlays")
                     }
-                    IconButton(onClick = onOpenPermissions) {
-                        Icon(Icons.Filled.Lock, contentDescription = "Permissions")
+                    IconButton(onClick = onOpenPause) {
+                        Icon(Icons.Filled.PauseCircle, contentDescription = "Pause")
                     }
                 }
             )
@@ -423,7 +459,24 @@ private fun MainScreen(
                 OutlinedButton(onClick = onOpenPhotoViewer) { Text("Open") }
             }
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            // 4. Web Shortcuts
+            // 4. Pause
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Pause", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Temporarily disable grayscale",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                OutlinedButton(onClick = onOpenPause) { Text("Open") }
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            // 5. Web Shortcuts
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -439,7 +492,50 @@ private fun MainScreen(
                 }
                 OutlinedButton(onClick = onOpenWebShortcuts) { Text("Open") }
             }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            // 6. Permissions
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Permissions", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Grant required app permissions",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                OutlinedButton(onClick = onOpenPermissions) { Text("Open") }
+            }
         }
+    }
+
+    if (showNotifPrompt) {
+        AlertDialog(
+            onDismissRequest = {
+                showNotifPrompt = false
+                prefs.edit().putBoolean("notif_permission_prompted", true).apply()
+            },
+            title = { Text("Enable Notifications") },
+            text = {
+                Text("Grayscaler can show a persistent notification while a pause is active so you can track when grayscale will re-enable. Grant notification permission in Permissions.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showNotifPrompt = false
+                    prefs.edit().putBoolean("notif_permission_prompted", true).apply()
+                    onOpenPermissions()
+                }) { Text("Open Permissions") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showNotifPrompt = false
+                    prefs.edit().putBoolean("notif_permission_prompted", true).apply()
+                }) { Text("Not now") }
+            }
+        )
     }
 
     if (showHelp) {

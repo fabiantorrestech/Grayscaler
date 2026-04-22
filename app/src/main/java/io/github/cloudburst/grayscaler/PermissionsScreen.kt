@@ -3,8 +3,11 @@ package io.github.cloudburst.grayscaler
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -82,6 +85,29 @@ fun PermissionsScreen(onBack: () -> Unit) {
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    var hasNotifPermission by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+                ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            else true
+        )
+    }
+    val requestNotifPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> hasNotifPermission = granted }
+
+    DisposableEffect(lifecycleOwner) {
+        val notifObserver = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                hasNotifPermission = ContextCompat.checkSelfPermission(
+                    context, android.Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(notifObserver)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(notifObserver) }
     }
 
     val detectedShizukuApps = remember {
@@ -168,6 +194,43 @@ fun PermissionsScreen(onBack: () -> Unit) {
                             it.flags = Intent.FLAG_ACTIVITY_NEW_TASK
                         })
                     }) { Text("Open") }
+                }
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            }
+
+            item {
+                SectionHeader("Notifications")
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        StatusIcon(hasNotifPermission)
+                        Column(modifier = Modifier.padding(start = 12.dp)) {
+                            Text("Post Notifications", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                if (hasNotifPermission) "Granted" else "Required for pause timer notification",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (hasNotifPermission) Color(0xFF4CAF50) else MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (!hasNotifPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            OutlinedButton(onClick = {
+                                requestNotifPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                            }) { Text("Request") }
+                        }
+                        OutlinedButton(onClick = {
+                            context.startActivity(
+                                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                }
+                            )
+                        }) { Text("Settings") }
+                    }
                 }
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             }
