@@ -4,7 +4,6 @@ import android.app.Service
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.os.IBinder
-import android.provider.Settings
 import android.view.WindowManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -107,14 +106,8 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
             setViewTreeSavedStateRegistryOwner(this@PauseOverlayService)
             setContent {
                 GrayscalerTheme {
-                    val readDaltonizerEnabled = {
-                        Settings.Secure.getInt(
-                            contentResolver,
-                            MainService.DISPLAY_DALTONIZER_ENABLED,
-                            0
-                        ) == MainService.ON
-                    }
-                    var grayscalerEnabled by remember { mutableStateOf(readDaltonizerEnabled()) }
+                    var grayscalerEnabled by remember { mutableStateOf(prefs.getBoolean("grayscaler_enabled", true)) }
+                    var lastDecision by remember { mutableStateOf(GrayscaleStateManager.lastDecision) }
                     var pauseUntil by remember { mutableStateOf(prefs.getLong("pause_until", 0L)) }
                     var now by remember { mutableStateOf(System.currentTimeMillis()) }
                     var customValue by remember { mutableStateOf("") }
@@ -201,11 +194,10 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                         Icon(Icons.Filled.OpenInNew, contentDescription = "Open app")
                                     }
                                     IconButton(onClick = {
-                                        val actual = readDaltonizerEnabled()
-                                        grayscalerEnabled = actual
+                                        grayscalerEnabled = prefs.getBoolean("grayscaler_enabled", true)
                                         pauseUntil = prefs.getLong("pause_until", 0L)
                                         now = System.currentTimeMillis()
-                                        prefs.edit().putBoolean("grayscaler_enabled", actual).apply()
+                                        lastDecision = GrayscaleStateManager.lastDecision
                                     }) {
                                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh state")
                                     }
@@ -213,19 +205,24 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
 
                                 val isPaused = pauseUntil > now
                                 val statusText = when {
+                                    !grayscalerEnabled -> "GrayScaler Off"
                                     isPaused -> {
                                         val totalSec = (pauseUntil - now) / 1000
                                         val m = totalSec / 60
                                         val s = totalSec % 60
-                                        if (m > 0) "Paused · ${m}m ${s}s" else "Paused · ${s}s"
+                                        val countdown = if (m > 0) "${m}m ${s}s" else "${s}s"
+                                        "GrayScaler On · Paused · $countdown"
                                     }
-                                    !grayscalerEnabled -> "Disabled"
-                                    else -> "Enabled"
+                                    lastDecision == GrayscaleStateManager.Decision.ENABLE -> "GrayScaler On · Enabled"
+                                    lastDecision == GrayscaleStateManager.Decision.DISABLE -> "GrayScaler On · Disabled"
+                                    else -> "GrayScaler On · Not Available"
                                 }
                                 val statusColor = when {
-                                    isPaused -> MaterialTheme.colorScheme.tertiary
                                     !grayscalerEnabled -> MaterialTheme.colorScheme.error
-                                    else -> MaterialTheme.colorScheme.primary
+                                    isPaused -> MaterialTheme.colorScheme.tertiary
+                                    lastDecision == GrayscaleStateManager.Decision.ENABLE -> MaterialTheme.colorScheme.primary
+                                    lastDecision == GrayscaleStateManager.Decision.DISABLE -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
                                 }
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -258,12 +255,8 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                         onCheckedChange = { enabled ->
                                             grayscalerEnabled = enabled
                                             prefs.edit().putBoolean("grayscaler_enabled", enabled).apply()
-                                            if (enabled) {
-                                                Settings.Secure.putInt(contentResolver, MainService.DISPLAY_DALTONIZER, MainService.MONOCHROME)
-                                                Settings.Secure.putInt(contentResolver, MainService.DISPLAY_DALTONIZER_ENABLED, MainService.ON)
-                                            } else {
-                                                Settings.Secure.putInt(contentResolver, MainService.DISPLAY_DALTONIZER_ENABLED, MainService.OFF)
-                                            }
+                                            GrayscaleStateManager.invalidate(this@PauseOverlayService)
+                                            lastDecision = GrayscaleStateManager.lastDecision
                                         }
                                     )
                                 }
