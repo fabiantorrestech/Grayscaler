@@ -16,6 +16,9 @@ object GrayscaleStateManager {
     private var lastPkg: String? = null
     private var lastClassName: String = ""
 
+    var lastDecision: Decision? = null
+        private set
+
     fun invalidate(context: Context) {
         appListStore = null
         scheduleStore = null
@@ -70,6 +73,7 @@ object GrayscaleStateManager {
 
     fun applyToSystem(context: Context, decision: Decision) {
         if (decision == Decision.SKIP) return
+        lastDecision = decision
         if (decision == Decision.ENABLE) {
             Settings.Secure.putInt(context.contentResolver, MainService.DISPLAY_DALTONIZER, MainService.MONOCHROME)
             Settings.Secure.putInt(context.contentResolver, MainService.DISPLAY_DALTONIZER_ENABLED, MainService.ON)

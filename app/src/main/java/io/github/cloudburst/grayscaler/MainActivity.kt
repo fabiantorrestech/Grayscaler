@@ -73,6 +73,19 @@ import io.github.cloudburst.grayscaler.ShizukuRunner.Companion.shizukuEnabled
 import io.github.cloudburst.grayscaler.ui.theme.GrayscalerTheme
 import java.util.concurrent.CyclicBarrier
 import kotlin.concurrent.thread
+import android.content.ComponentName
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 
 class MainActivity : ComponentActivity() {
     lateinit var store: AppListStore
@@ -315,6 +328,39 @@ private fun MainScreen(
     var powerMenuMode by remember { mutableStateOf(prefs.getString("power_menu_mode", "disable") ?: "disable") }
     var inlineReplyMode by remember { mutableStateOf(prefs.getString("inline_reply_mode", "ignore") ?: "ignore") }
 
+    var hasWriteSecure by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val accessibilityComponent = remember { ComponentName(context, MainService::class.java) }
+    var accessibilityEnabled by remember {
+        mutableStateOf(checkAccessibilityServiceEnabled(context, accessibilityComponent))
+    }
+    var showAdbDialog by remember { mutableStateOf(false) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME)
+                hasWriteSecure = ContextCompat.checkSelfPermission(context, android.Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    DisposableEffect(Unit) {
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                accessibilityEnabled = checkAccessibilityServiceEnabled(context, accessibilityComponent)
+            }
+        }
+        context.contentResolver.registerContentObserver(
+            Settings.Secure.getUriFor(Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES),
+            false,
+            observer
+        )
+        onDispose { context.contentResolver.unregisterContentObserver(observer) }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -347,6 +393,27 @@ private fun MainScreen(
         }
     ) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding).verticalScroll(rememberScrollState())) {
+            if (!hasWriteSecure) {
+                PermissionBanner(
+                    message = "Secure settings permission missing — grayscale cannot be applied",
+                    actionLabel = "Permissions",
+                    onAction = onOpenPermissions,
+                    onAdb = { showAdbDialog = true }
+                )
+            }
+            if (!accessibilityEnabled) {
+                PermissionBanner(
+                    message = "Accessibility service disabled — grayscale won't respond to app changes",
+                    actionLabel = "Enable",
+                    onAction = {
+                        context.startActivity(
+                            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                        )
+                    }
+                )
+            }
             // 1. App List
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
@@ -463,24 +530,8 @@ private fun MainScreen(
                 OutlinedButton(onClick = onOpenPhotoViewer) { Text("Open") }
             }
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            // 4. Pause
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Pause", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "Temporarily disable grayscale",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                OutlinedButton(onClick = onOpenPause) { Text("Open") }
-            }
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            // 5. Web Shortcuts
+            // 4. Web Shortcuts
+
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -497,7 +548,7 @@ private fun MainScreen(
                 OutlinedButton(onClick = onOpenWebShortcuts) { Text("Open") }
             }
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            // 6. Permissions
+            // 5. Permissions
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -542,6 +593,29 @@ private fun MainScreen(
         )
     }
 
+    if (showAdbDialog) {
+        AlertDialog(
+            onDismissRequest = { showAdbDialog = false },
+            title = { Text("Grant via ADB") },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text("With ADB connected, run:", style = MaterialTheme.typography.bodySmall)
+                    AdbCommand("adb shell pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS")
+                    AdbCommand("adb shell pm grant ${context.packageName} android.permission.PACKAGE_USAGE_STATS")
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R)
+                        AdbCommand("adb shell pm grant ${context.packageName} android.permission.QUERY_ALL_PACKAGES")
+                    AdbCommand("adb shell appops set ${context.packageName} SYSTEM_ALERT_WINDOW allow")
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAdbDialog = false }) { Text("Got it") }
+            }
+        )
+    }
+
     if (showHelp) {
         AlertDialog(
             onDismissRequest = { showHelp = false },
@@ -579,6 +653,52 @@ private fun MainScreen(
             }
         )
     }
+}
+
+@Composable
+private fun PermissionBanner(
+    message: String,
+    actionLabel: String,
+    onAction: () -> Unit,
+    onAdb: (() -> Unit)? = null
+) {
+    Surface(color = MaterialTheme.colorScheme.errorContainer) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                Icons.Filled.Warning,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                message,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            if (onAdb != null) {
+                TextButton(
+                    onClick = onAdb,
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onErrorContainer)
+                ) { Text("ADB") }
+            }
+            TextButton(
+                onClick = onAction,
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onErrorContainer)
+            ) { Text(actionLabel) }
+        }
+    }
+}
+
+@Composable
+private fun AdbCommand(cmd: String) {
+    Text(cmd, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace))
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

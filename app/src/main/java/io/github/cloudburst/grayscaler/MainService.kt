@@ -137,7 +137,15 @@ class MainService : AccessibilityService() {
             pkg == "com.android.systemui" -> return
         }
 
-        // 3. Save foreground context for unlock restore, then apply per-app logic
+        // 3. Discard stale events from windows being detached — only trust this event if
+        //    rootInActiveWindow confirms the same package is actually in the foreground.
+        //    Null rootInActiveWindow means we can't confirm either way, so we let it through.
+        val root = rootInActiveWindow
+        val rootPkg = root?.packageName?.toString()
+        root?.recycle()
+        if (rootPkg != null && rootPkg != pkg) return
+
+        // 4. Save foreground context for unlock restore, then apply per-app logic
         prefs.edit()
             .putString("last_foreground_pkg", pkg)
             .putString("last_foreground_class", className)

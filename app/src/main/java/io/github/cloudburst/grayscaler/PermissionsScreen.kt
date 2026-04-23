@@ -69,23 +69,25 @@ fun PermissionsScreen(onBack: () -> Unit) {
         ContextCompat.checkSelfPermission(context, android.Manifest.permission.QUERY_ALL_PACKAGES) == PackageManager.PERMISSION_GRANTED
     else true
     val hasOverlay = Settings.canDrawOverlays(context)
+    val accessibilityComponent = remember { ComponentName(context, MainService::class.java) }
     var accessibilityEnabled by remember {
-        mutableStateOf(
-            Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
-                ?.contains(ComponentName(context, MainService::class.java).flattenToString()) ?: false
-        )
+        mutableStateOf(checkAccessibilityServiceEnabled(context, accessibilityComponent))
     }
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                val enabledServices = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
-                accessibilityEnabled = enabledServices.contains(ComponentName(context, MainService::class.java).flattenToString())
+    DisposableEffect(Unit) {
+        val observer = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                accessibilityEnabled = checkAccessibilityServiceEnabled(context, accessibilityComponent)
             }
         }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        context.contentResolver.registerContentObserver(
+            Settings.Secure.getUriFor(Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES),
+            false,
+            observer
+        )
+        onDispose { context.contentResolver.unregisterContentObserver(observer) }
     }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     var hasNotifPermission by remember {
         mutableStateOf(
