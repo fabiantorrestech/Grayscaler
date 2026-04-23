@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenuItem
@@ -36,10 +37,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -110,10 +115,19 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                         ) == MainService.ON
                     }
                     var grayscalerEnabled by remember { mutableStateOf(readDaltonizerEnabled()) }
+                    var pauseUntil by remember { mutableStateOf(prefs.getLong("pause_until", 0L)) }
+                    var now by remember { mutableStateOf(System.currentTimeMillis()) }
                     var customValue by remember { mutableStateOf("") }
                     var unitExpanded by remember { mutableStateOf(false) }
                     var selectedUnit by remember { mutableStateOf("Minutes") }
                     var confirmingPauseSeconds by remember { mutableStateOf<Long?>(null) }
+
+                    LaunchedEffect(pauseUntil) {
+                        while (pauseUntil > System.currentTimeMillis()) {
+                            delay(1000L)
+                            now = System.currentTimeMillis()
+                        }
+                    }
 
                     val applyPauseOrConfirm: (Long) -> Unit = { seconds ->
                         val activePauseUntil = prefs.getLong("pause_until", 0L)
@@ -168,28 +182,65 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                     return@Column
                                 }
 
-                                Text(
-                                    "Pause Grayscaler",
-                                    style = MaterialTheme.typography.titleLarge
-                                )
-
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        "Refresh Grayscaler",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        "Pause Grayscaler",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        modifier = Modifier.weight(1f)
                                     )
+                                    IconButton(onClick = {
+                                        val launchIntent = Intent(this@PauseOverlayService, MainActivity::class.java).apply {
+                                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                                        }
+                                        startActivity(launchIntent)
+                                        dismiss()
+                                    }) {
+                                        Icon(Icons.Filled.OpenInNew, contentDescription = "Open app")
+                                    }
                                     IconButton(onClick = {
                                         val actual = readDaltonizerEnabled()
                                         grayscalerEnabled = actual
+                                        pauseUntil = prefs.getLong("pause_until", 0L)
+                                        now = System.currentTimeMillis()
                                         prefs.edit().putBoolean("grayscaler_enabled", actual).apply()
                                     }) {
                                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh state")
                                     }
+                                }
+
+                                val isPaused = pauseUntil > now
+                                val statusText = when {
+                                    isPaused -> {
+                                        val totalSec = (pauseUntil - now) / 1000
+                                        val m = totalSec / 60
+                                        val s = totalSec % 60
+                                        if (m > 0) "Paused · ${m}m ${s}s" else "Paused · ${s}s"
+                                    }
+                                    !grayscalerEnabled -> "Disabled"
+                                    else -> "Enabled"
+                                }
+                                val statusColor = when {
+                                    isPaused -> MaterialTheme.colorScheme.tertiary
+                                    !grayscalerEnabled -> MaterialTheme.colorScheme.error
+                                    else -> MaterialTheme.colorScheme.primary
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = statusColor,
+                                        modifier = Modifier.size(8.dp)
+                                    ) {}
+                                    Text(
+                                        statusText,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = statusColor
+                                    )
                                 }
 
                                 Row(
