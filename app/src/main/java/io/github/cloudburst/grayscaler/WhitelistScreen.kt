@@ -15,11 +15,13 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
@@ -78,12 +80,17 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
     val (apps, setApps) = remember { mutableStateOf(effectiveStore.apps) }
     var selectedTab by remember { mutableIntStateOf(1) }
     var showClearConfirm by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
 
     val tabLabels = if (whitelist) listOf("Whitelisted", "All", "Others") else listOf("Blacklisted", "All", "Others")
     val filteredApps = when (selectedTab) {
         0 -> apps.filter { it.second }
         2 -> apps.filter { !it.second }
         else -> apps
+    }.filter { (app, _) ->
+        searchQuery.isBlank() ||
+        app.appName.contains(searchQuery, ignoreCase = true) ||
+        app.packageName.contains(searchQuery, ignoreCase = true)
     }
 
     Scaffold(
@@ -123,8 +130,33 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
                     )
                 }
             }
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Search apps...") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }) {
+                            Icon(Icons.Filled.Delete, contentDescription = "Clear search")
+                        }
+                    }
+                },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            )
             val listState = rememberLazyListState()
             Box(modifier = Modifier.fillMaxSize()) {
+                if (filteredApps.isEmpty()) {
+                    Text(
+                        text = if (searchQuery.isBlank()) "No apps" else "No apps match \"$searchQuery\"",
+                        modifier = Modifier.align(Alignment.Center),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize().padding(end = 20.dp)
