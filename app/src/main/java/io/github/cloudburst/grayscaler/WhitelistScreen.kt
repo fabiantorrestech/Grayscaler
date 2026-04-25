@@ -126,6 +126,8 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
                     Tab(
                         selected = selectedTab == index,
                         onClick = { selectedTab = index },
+                        selectedContentColor = MaterialTheme.colorScheme.secondary,
+                        unselectedContentColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.72f),
                         text = { Text(label) }
                     )
                 }

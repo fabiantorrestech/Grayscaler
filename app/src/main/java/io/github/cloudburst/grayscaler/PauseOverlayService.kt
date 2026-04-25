@@ -137,7 +137,7 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(Color.Transparent)
+                            .background(Color.Black.copy(alpha = 0.42f))
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null
@@ -146,7 +146,7 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                     ) {
                         Surface(
                             modifier = Modifier
-                                .shadow(18.dp, MaterialTheme.shapes.extraLarge, clip = false)
+                                .shadow(28.dp, MaterialTheme.shapes.extraLarge, clip = false)
                                 .width(300.dp)
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
