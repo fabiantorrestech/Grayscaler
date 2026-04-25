@@ -82,6 +82,7 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
         showOverlay()
+        lifecycleRegistry.currentState = Lifecycle.State.RESUMED
         return START_NOT_STICKY
     }
 
@@ -263,7 +264,6 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
 
                                 HorizontalDivider()
 
-                                // Preset quick-pause buttons
                                 Text(
                                     "Quick pause",
                                     style = MaterialTheme.typography.labelMedium,
@@ -304,7 +304,6 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
 
                                 HorizontalDivider()
 
-                                // Custom duration
                                 Text(
                                     "Custom duration",
                                     style = MaterialTheme.typography.labelMedium,
@@ -377,7 +376,6 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
 
         overlayView = view
         windowManager.addView(view, params)
-        lifecycleRegistry.currentState = Lifecycle.State.RESUMED
     }
 
     private fun applyPause(seconds: Long) {
