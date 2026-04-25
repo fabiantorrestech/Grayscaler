@@ -168,7 +168,11 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = Color(0xFF4CAF50))
+                            Icon(
+                                Icons.Filled.CheckCircle,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
                             Text("Grayscaler is active", style = MaterialTheme.typography.titleMedium)
                         }
                     }
@@ -176,7 +180,7 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
             }
 
             // 2. Quick Pause
-            Text("Quick Pause", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            Text("Quick Pause", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
 
             val row1 = listOf("30s" to 30L, "1m" to 60L, "3m" to 180L, "5m" to 300L)
             val row2 = listOf("10m" to 600L, "15m" to 900L, "30m" to 1800L, "1h" to 3600L)
@@ -186,8 +190,8 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
                     FilledTonalButton(
                         onClick = { applyPause(secs) },
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(4.dp)
-                    ) { Text(label, style = MaterialTheme.typography.labelSmall) }
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
+                    ) { Text(label, style = MaterialTheme.typography.labelLarge) }
                 }
             }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -195,15 +199,15 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
                     FilledTonalButton(
                         onClick = { applyPause(secs) },
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(4.dp)
-                    ) { Text(label, style = MaterialTheme.typography.labelSmall) }
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
+                    ) { Text(label, style = MaterialTheme.typography.labelLarge) }
                 }
             }
 
             HorizontalDivider()
 
             // 3. Custom Duration
-            Text("Custom Duration", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            Text("Custom Duration", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,

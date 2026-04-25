@@ -168,7 +168,11 @@ fun PermissionsScreen(onBack: () -> Unit) {
                             Toast.makeText(context, "Shizuku is not running", Toast.LENGTH_SHORT).show()
                         }
                     },
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary,
+                        contentColor = MaterialTheme.colorScheme.onSecondary
+                    )
                 ) { Text("Grant All via Shizuku") }
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             }
@@ -187,15 +191,18 @@ fun PermissionsScreen(onBack: () -> Unit) {
                             Text(
                                 if (accessibilityEnabled) "Enabled" else "Disabled — tap to enable",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (accessibilityEnabled) Color(0xFF4CAF50) else MaterialTheme.colorScheme.error
+                                color = if (accessibilityEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
                             )
                         }
                     }
-                    OutlinedButton(onClick = {
+                    OutlinedButton(
+                        onClick = {
                         context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).also {
                             it.flags = Intent.FLAG_ACTIVITY_NEW_TASK
                         })
-                    }) { Text("Open") }
+                    },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.secondary)
+                    ) { Text("Open") }
                 }
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             }
@@ -214,7 +221,7 @@ fun PermissionsScreen(onBack: () -> Unit) {
                             Text(
                                 if (hasNotifPermission) "Granted" else "Required for pause timer notification",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (hasNotifPermission) Color(0xFF4CAF50) else MaterialTheme.colorScheme.error
+                                color = if (hasNotifPermission) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
                             )
                         }
                     }
@@ -222,7 +229,7 @@ fun PermissionsScreen(onBack: () -> Unit) {
                         if (!hasNotifPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                             OutlinedButton(onClick = {
                                 requestNotifPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-                            }) { Text("Request") }
+                            }, colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.secondary)) { Text("Request") }
                         }
                         OutlinedButton(onClick = {
                             context.startActivity(
@@ -231,7 +238,7 @@ fun PermissionsScreen(onBack: () -> Unit) {
                                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                                 }
                             )
-                        }) { Text("Settings") }
+                        }, colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.secondary)) { Text("Settings") }
                     }
                 }
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
@@ -253,7 +260,10 @@ fun PermissionsScreen(onBack: () -> Unit) {
                         )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { showShizukuPicker = true }) { Text("Change") }
+                        OutlinedButton(
+                            onClick = { showShizukuPicker = true },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.secondary)
+                        ) { Text("Change") }
                         if (shizukuPackage != null) {
                             Button(onClick = {
                                 try {
@@ -264,7 +274,10 @@ fun PermissionsScreen(onBack: () -> Unit) {
                                 } catch (e: Exception) {
                                     Toast.makeText(context, "Could not open Shizuku", Toast.LENGTH_SHORT).show()
                                 }
-                            }) { Text("Open") }
+                            }, colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.secondary,
+                                contentColor = MaterialTheme.colorScheme.onSecondary
+                            )) { Text("Open") }
                         }
                     }
                 }
@@ -350,7 +363,7 @@ private fun SectionHeader(title: String) {
     Text(
         title,
         style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
+        color = MaterialTheme.colorScheme.secondary,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
     )
 }
@@ -370,7 +383,11 @@ private fun PermissionRow(label: String, granted: Boolean) {
 @Composable
 private fun StatusIcon(ok: Boolean) {
     if (ok) {
-        Icon(Icons.Filled.CheckCircle, contentDescription = "Granted", tint = Color(0xFF4CAF50))
+        Icon(
+            Icons.Filled.CheckCircle,
+            contentDescription = "Granted",
+            tint = MaterialTheme.colorScheme.primary
+        )
     } else {
         Icon(Icons.Filled.Warning, contentDescription = "Missing", tint = MaterialTheme.colorScheme.error)
     }

@@ -185,7 +185,7 @@ fun PhotoViewerSettingsScreen(onBack: () -> Unit) {
                 Text(
                     "Compatible Apps",
                     style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = MaterialTheme.colorScheme.secondary,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                 )
             }
@@ -232,7 +232,7 @@ fun PhotoViewerSettingsScreen(onBack: () -> Unit) {
                         entry.patternNote.isNotBlank() -> Text(
                             entry.patternNote,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(start = 16.dp, bottom = 8.dp)
                         )
                         else -> Text(
@@ -249,7 +249,7 @@ fun PhotoViewerSettingsScreen(onBack: () -> Unit) {
                 Text(
                     "Custom Apps",
                     style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = MaterialTheme.colorScheme.secondary,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                 )
             }

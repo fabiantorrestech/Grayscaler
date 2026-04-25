@@ -49,6 +49,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -145,13 +146,15 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                     ) {
                         Surface(
                             modifier = Modifier
+                                .shadow(18.dp, MaterialTheme.shapes.extraLarge, clip = false)
                                 .width(300.dp)
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null
                                 ) { /* consume taps to prevent scrim dismiss */ },
                             shape = MaterialTheme.shapes.extraLarge,
-                            tonalElevation = 6.dp
+                            color = MaterialTheme.colorScheme.background,
+                            tonalElevation = 0.dp
                         ) {
                             Column(
                                 modifier = Modifier.padding(24.dp),
@@ -167,11 +170,19 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
                                     ) {
-                                        TextButton(onClick = { confirmingPauseSeconds = null }) { Text("Cancel") }
+                                        TextButton(
+                                            onClick = { confirmingPauseSeconds = null },
+                                            colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                                                contentColor = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        ) { Text("Cancel") }
                                         Button(onClick = {
                                             applyPause(confirmingPauseSeconds!!)
                                             dismiss()
-                                        }) { Text("Replace") }
+                                        }, colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.secondary,
+                                            contentColor = MaterialTheme.colorScheme.onSecondary
+                                        )) { Text("Replace") }
                                     }
                                     return@Column
                                 }
@@ -182,7 +193,7 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                 ) {
                                     Text(
                                         "Pause Grayscaler",
-                                        style = MaterialTheme.typography.titleMedium,
+                                        style = MaterialTheme.typography.headlineSmall,
                                         modifier = Modifier.weight(1f)
                                     )
                                     IconButton(onClick = {
@@ -236,7 +247,7 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                     ) {}
                                     Text(
                                         statusText,
-                                        style = MaterialTheme.typography.labelSmall,
+                                        style = MaterialTheme.typography.labelMedium,
                                         color = statusColor
                                     )
                                 }
@@ -248,7 +259,7 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                 ) {
                                     Text(
                                         "Global Toggle",
-                                        style = MaterialTheme.typography.bodySmall,
+                                        style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Switch(
@@ -266,8 +277,8 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
 
                                 Text(
                                     "Quick pause",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.secondary
                                 )
 
                                 val row1 = listOf("30s" to 30L, "1m" to 60L, "3m" to 180L, "5m" to 300L)
@@ -281,9 +292,13 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                         FilledTonalButton(
                                             onClick = { applyPauseOrConfirm(seconds) },
                                             modifier = Modifier.weight(1f),
-                                            contentPadding = PaddingValues(4.dp)
+                                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                                            colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
+                                                containerColor = MaterialTheme.colorScheme.secondary,
+                                                contentColor = MaterialTheme.colorScheme.onSecondary
+                                            )
                                         ) {
-                                            Text(label, style = MaterialTheme.typography.labelSmall)
+                                            Text(label, style = MaterialTheme.typography.labelLarge)
                                         }
                                     }
                                 }
@@ -295,9 +310,13 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                         FilledTonalButton(
                                             onClick = { applyPauseOrConfirm(seconds) },
                                             modifier = Modifier.weight(1f),
-                                            contentPadding = PaddingValues(4.dp)
+                                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                                            colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
+                                                containerColor = MaterialTheme.colorScheme.secondary,
+                                                contentColor = MaterialTheme.colorScheme.onSecondary
+                                            )
                                         ) {
-                                            Text(label, style = MaterialTheme.typography.labelSmall)
+                                            Text(label, style = MaterialTheme.typography.labelLarge)
                                         }
                                     }
                                 }
@@ -306,8 +325,8 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
 
                                 Text(
                                     "Custom duration",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.secondary
                                 )
 
                                 Row(
@@ -354,7 +373,12 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
                                 ) {
-                                    TextButton(onClick = { dismiss() }) { Text("Cancel") }
+                                    TextButton(
+                                        onClick = { dismiss() },
+                                        colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                                            contentColor = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    ) { Text("Cancel") }
                                     Button(
                                         onClick = {
                                             val value = customValue.toLongOrNull() ?: return@Button
@@ -364,7 +388,11 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                                 else -> value
                                             }
                                             if (seconds > 0) applyPauseOrConfirm(seconds)
-                                        }
+                                        },
+                                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.secondary,
+                                            contentColor = MaterialTheme.colorScheme.onSecondary
+                                        )
                                     ) { Text("Apply") }
                                 }
                             }

@@ -10,12 +10,15 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 
 class MainService : AccessibilityService() {
 
     // Package name of the browser currently in foreground, null if not a browser
     private var currentBrowserPkg: String? = null
     private var lastUrlCheckTime = 0L
+    private var experimentalNotificationShadeActive = false
+    private var experimentalNotificationShadeLastConfirmAt = 0L
 
     private val browserPackages: Set<String> by lazy {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse("http://example.com"))
@@ -29,12 +32,14 @@ class MainService : AccessibilityService() {
             val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
             when (intent.action) {
                 Intent.ACTION_SCREEN_OFF -> {
+                    clearExperimentalNotificationShade("screen_off")
                     GrayscaleStateManager.applySystemEventMode(
                         context,
                         prefs.getString("lockscreen_mode", "ignore") ?: "ignore"
                     )
                 }
                 Intent.ACTION_USER_PRESENT -> {
+                    clearExperimentalNotificationShade("user_present")
                     GrayscaleStateManager.invalidate(context)
                 }
             }
@@ -71,6 +76,8 @@ class MainService : AccessibilityService() {
 
         // URL-based web shortcut matching — debounced, only when a browser is in foreground
         if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+            if (handleExperimentalNotificationShadeEvent(event, prefs)) return
             val browserPkg = currentBrowserPkg ?: return
             if (event.packageName?.toString() != browserPkg) return
             val now = System.currentTimeMillis()
@@ -80,10 +87,12 @@ class MainService : AccessibilityService() {
             return
         }
 
+        val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+        if (handleExperimentalNotificationShadeEvent(event, prefs)) return
+
         if (event?.eventType != TYPE_WINDOW_STATE_CHANGED) return
         val pkg = event.packageName?.toString() ?: return
         val className = event.className?.toString() ?: ""
-        val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
 
         // 1. Diagnostic capture — runs independently of master switch
         if (prefs.getBoolean("photo_viewer_diagnostic", false)) {
@@ -199,10 +208,127 @@ class MainService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
+        clearExperimentalNotificationShade("interrupt")
         GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
     }
 
+    private fun handleExperimentalNotificationShadeEvent(
+        event: AccessibilityEvent?,
+        prefs: android.content.SharedPreferences
+    ): Boolean {
+        if (event == null) return false
+        if (!prefs.getBoolean(PREF_EXPERIMENTAL_NOTIFICATION_SHADE_ENABLED, false)) {
+            clearExperimentalNotificationShade("disabled")
+            return false
+        }
+
+        val eventType = event.eventType
+        if (eventType != TYPE_WINDOW_STATE_CHANGED &&
+            eventType != AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
+            eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        ) {
+            return false
+        }
+
+        val pkg = event.packageName?.toString() ?: ""
+        val className = event.className?.toString() ?: ""
+        val signal = classifyExperimentalNotificationShadeSignal(pkg, className)
+        val hasShadeWindow = hasLikelyNotificationShadeWindow()
+        val now = System.currentTimeMillis()
+
+        when (signal) {
+            ShadeSignal.EXCLUDED -> {
+                if (experimentalNotificationShadeActive) {
+                    clearExperimentalNotificationShade("excluded:$className")
+                } else {
+                    storeExperimentalNotificationShadeDebug("excluded:$className")
+                }
+                return false
+            }
+            ShadeSignal.SHADE -> {
+                if (pkg == "com.android.systemui" && hasShadeWindow) {
+                    experimentalNotificationShadeActive = true
+                    experimentalNotificationShadeLastConfirmAt = now
+                    storeExperimentalNotificationShadeDebug("engaged:$className")
+                }
+            }
+            ShadeSignal.UNKNOWN -> {
+                if (experimentalNotificationShadeActive) {
+                    if (pkg.isNotEmpty() && pkg != "com.android.systemui") {
+                        clearExperimentalNotificationShade("focus_return:$pkg")
+                    } else if (hasShadeWindow) {
+                        experimentalNotificationShadeLastConfirmAt = now
+                        storeExperimentalNotificationShadeDebug("confirmed:$className")
+                    } else if (now - experimentalNotificationShadeLastConfirmAt > EXPERIMENTAL_NOTIFICATION_SHADE_TIMEOUT_MS) {
+                        clearExperimentalNotificationShade("timeout")
+                    }
+                } else if (pkg == "com.android.systemui" && hasShadeWindow && looksLikeShadeClass(className)) {
+                    experimentalNotificationShadeActive = true
+                    experimentalNotificationShadeLastConfirmAt = now
+                    storeExperimentalNotificationShadeDebug("engaged_weak:$className")
+                }
+            }
+        }
+
+        if (!experimentalNotificationShadeActive) return false
+
+        GrayscaleStateManager.applySystemEventMode(
+            this,
+            prefs.getString(PREF_EXPERIMENTAL_NOTIFICATION_SHADE_MODE, "ignore") ?: "ignore"
+        )
+        return true
+    }
+
+    private fun hasLikelyNotificationShadeWindow(): Boolean {
+        return windows.any { window ->
+            if (window.type != AccessibilityWindowInfo.TYPE_SYSTEM) return@any false
+            if (!window.isActive && !window.isFocused) return@any false
+            val title = window.title?.toString().orEmpty()
+            looksLikeShadeClass(title) && !looksLikeExcludedSystemUi(title)
+        }
+    }
+
+    private fun classifyExperimentalNotificationShadeSignal(pkg: String, className: String): ShadeSignal {
+        if (pkg != "com.android.systemui") return ShadeSignal.UNKNOWN
+        if (looksLikeExcludedSystemUi(className)) return ShadeSignal.EXCLUDED
+        if (looksLikeShadeClass(className)) return ShadeSignal.SHADE
+        return ShadeSignal.UNKNOWN
+    }
+
+    private fun looksLikeShadeClass(value: String): Boolean {
+        return SHADE_KEYWORDS.any { value.contains(it, ignoreCase = true) }
+    }
+
+    private fun looksLikeExcludedSystemUi(value: String): Boolean {
+        return EXCLUDED_SYSTEMUI_KEYWORDS.any { value.contains(it, ignoreCase = true) }
+    }
+
+    private fun clearExperimentalNotificationShade(reason: String) {
+        if (!experimentalNotificationShadeActive &&
+            getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+                .getString(PREF_EXPERIMENTAL_NOTIFICATION_SHADE_DEBUG, null) == reason
+        ) {
+            return
+        }
+        experimentalNotificationShadeActive = false
+        experimentalNotificationShadeLastConfirmAt = 0L
+        storeExperimentalNotificationShadeDebug(reason)
+    }
+
+    private fun storeExperimentalNotificationShadeDebug(reason: String) {
+        getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREF_EXPERIMENTAL_NOTIFICATION_SHADE_DEBUG, reason)
+            .apply()
+    }
+
+    private enum class ShadeSignal { SHADE, EXCLUDED, UNKNOWN }
+
     companion object {
+        const val PREF_EXPERIMENTAL_NOTIFICATION_SHADE_ENABLED = "experimental_notification_shade_enabled"
+        const val PREF_EXPERIMENTAL_NOTIFICATION_SHADE_MODE = "experimental_notification_shade_mode"
+        const val PREF_EXPERIMENTAL_NOTIFICATION_SHADE_DEBUG = "experimental_notification_shade_debug"
+
         const val DISPLAY_DALTONIZER = "accessibility_display_daltonizer"
         const val DISPLAY_DALTONIZER_ENABLED = "accessibility_display_daltonizer_enabled"
         const val MONOCHROME = 0
@@ -211,6 +337,7 @@ class MainService : AccessibilityService() {
 
         private const val TAG = "Grayscaler"
         private const val URL_CHECK_DEBOUNCE_MS = 500L
+        private const val EXPERIMENTAL_NOTIFICATION_SHADE_TIMEOUT_MS = 1200L
 
         private val DOMAIN_REGEX = Regex("^[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?\\.[a-zA-Z]{2,}(/\\S*)?$")
 
@@ -219,6 +346,16 @@ class MainService : AccessibilityService() {
         private val NOTIF_KEYWORDS = setOf(
             "NotificationShade", "NotificationPanel", "NotificationBar",
             "StatusBar", "QuickSettings", "QuickSetting"
+        )
+
+        private val SHADE_KEYWORDS = setOf(
+            "NotificationShade", "NotificationPanel", "StatusBar",
+            "QuickSettings", "QuickSetting", "QSPanel", "Shade"
+        )
+
+        private val EXCLUDED_SYSTEMUI_KEYWORDS = setOf(
+            "Volume", "VolumeDialog", "VolumePanel", "SafetyWarning",
+            "GlobalActions", "PowerMenu", "Keyguard", "HeadsUp", "Headsup"
         )
 
         private val LOCKSCREEN_KEYWORDS = setOf(

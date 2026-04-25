@@ -33,7 +33,20 @@ object GrayscaleStateManager {
         applyToSystem(context, evaluate(pkg, cls, context))
     }
 
+    fun evaluateCurrentApp(context: Context, className: String): Decision {
+        return evaluate(context.packageName, className, context, allowSelfIgnoreBypass = true)
+    }
+
     fun evaluate(pkg: String, className: String, context: Context): Decision {
+        return evaluate(pkg, className, context, allowSelfIgnoreBypass = false)
+    }
+
+    private fun evaluate(
+        pkg: String,
+        className: String,
+        context: Context,
+        allowSelfIgnoreBypass: Boolean,
+    ): Decision {
         val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
 
         // Photo viewer auto-disable — overrides all other rules
@@ -45,7 +58,8 @@ object GrayscaleStateManager {
 
         // User-managed ignore list (includes system ignores + Gemini group + user additions)
         val ignoreStore = overlayIgnoreStore ?: OverlayIgnoreStore(context).also { it.load(); overlayIgnoreStore = it }
-        if (ignoreStore.effectiveIgnoreList().contains(pkg)) return Decision.SKIP
+        val bypassIgnore = allowSelfIgnoreBypass && pkg == context.packageName
+        if (!bypassIgnore && ignoreStore.effectiveIgnoreList().contains(pkg)) return Decision.SKIP
 
         // Skip keyboard/IME packages
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager

@@ -11,25 +11,31 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
@@ -43,7 +49,6 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -181,6 +186,12 @@ class MainActivity : ComponentActivity() {
         GrayscaleStateManager.invalidate(this)
     }
 
+    override fun onResume() {
+        super.onResume()
+        val decision = GrayscaleStateManager.evaluateCurrentApp(this, javaClass.name)
+        GrayscaleStateManager.applyToSystem(this, decision)
+    }
+
     private fun loadCCLauncherShortcuts(): List<WebShortcutEntry> {
         return try {
             val uri = android.net.Uri.parse("content://app.cclauncher.shortcuts/pinned")
@@ -232,10 +243,12 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
                 onOpenSchedules = { navController.navigate("schedules") },
                 onOpenOverlayIgnore = { navController.navigate("overlay_ignore") },
                 onOpenPermissions = { navController.navigate("permissions") },
+                onOpenAppearance = { navController.navigate("appearance") },
                 onOpenPhotoViewer = { navController.navigate("photo_viewer") },
                 onOpenWhitelist = { navController.navigate("whitelist") },
                 onOpenWebShortcuts = { navController.navigate("web_shortcuts") },
-                onOpenPause = { navController.navigate("pause") }
+                onOpenPause = { navController.navigate("pause") },
+                onOpenDeveloper = { navController.navigate("developer") }
             )
         }
         composable("schedules") {
@@ -280,6 +293,9 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
         composable("permissions") {
             PermissionsScreen(onBack = { navController.popBackStack() })
         }
+        composable("appearance") {
+            AppearanceSettingsScreen(onBack = { navController.popBackStack() })
+        }
         composable("photo_viewer") {
             PhotoViewerSettingsScreen(onBack = { navController.popBackStack() })
         }
@@ -295,6 +311,9 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
                 onOpenPermissions = { navController.navigate("permissions") }
             )
         }
+        composable("developer") {
+            DeveloperSettingsScreen(onBack = { navController.popBackStack() })
+        }
     }
 }
 
@@ -305,10 +324,12 @@ private fun MainScreen(
     onOpenSchedules: () -> Unit,
     onOpenOverlayIgnore: () -> Unit,
     onOpenPermissions: () -> Unit,
+    onOpenAppearance: () -> Unit,
     onOpenPhotoViewer: () -> Unit,
     onOpenWhitelist: () -> Unit,
     onOpenWebShortcuts: () -> Unit,
-    onOpenPause: () -> Unit
+    onOpenPause: () -> Unit,
+    onOpenDeveloper: () -> Unit
 ) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("grayscaler_prefs", android.content.Context.MODE_PRIVATE) }
@@ -325,7 +346,6 @@ private fun MainScreen(
         )
     }
     var appSwitcherMode by remember { mutableStateOf(prefs.getString("app_switcher_mode", "ignore") ?: "ignore") }
-    var notifCenterMode by remember { mutableStateOf(prefs.getString("notification_center_mode", "ignore") ?: "ignore") }
     var lockscreenMode by remember { mutableStateOf(prefs.getString("lockscreen_mode", "ignore") ?: "ignore") }
     var powerMenuMode by remember { mutableStateOf(prefs.getString("power_menu_mode", "disable") ?: "disable") }
     var inlineReplyMode by remember { mutableStateOf(prefs.getString("inline_reply_mode", "ignore") ?: "ignore") }
@@ -362,42 +382,58 @@ private fun MainScreen(
         )
         onDispose { context.contentResolver.unregisterContentObserver(observer) }
     }
-    LaunchedEffect(Unit) {
-        if (notifCenterMode != "ignore") {
-            notifCenterMode = "ignore"
-            prefs.edit().putString("notification_center_mode", "ignore").apply()
-        }
-    }
-
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Grayscaler") },
-                actions = {
-                    // Global on/off master switch
-                    Switch(
-                        checked = grayscalerEnabled,
-                        onCheckedChange = { enabled ->
-                            grayscalerEnabled = enabled
-                            prefs.edit().putBoolean("grayscaler_enabled", enabled).apply()
-                            GrayscaleStateManager.invalidate(context)
-                        },
-                        modifier = Modifier.padding(end = 4.dp)
-                    )
-                    IconButton(onClick = { showHelp = true }) {
-                        Icon(Icons.Filled.Info, contentDescription = "Shortcut setup help")
+            Surface {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Grayscaler",
+                            style = MaterialTheme.typography.headlineSmall,
+                            modifier = Modifier
+                                .weight(1f)
+                                .pointerInput(Unit) {
+                                    detectTapGestures(onLongPress = { onOpenDeveloper() })
+                                }
+                        )
+                        Switch(
+                            checked = grayscalerEnabled,
+                            onCheckedChange = { enabled ->
+                                grayscalerEnabled = enabled
+                                prefs.edit().putBoolean("grayscaler_enabled", enabled).apply()
+                                GrayscaleStateManager.invalidate(context)
+                            }
+                        )
                     }
-                    IconButton(onClick = onOpenSchedules) {
-                        Icon(Icons.Filled.DateRange, contentDescription = "Schedules")
-                    }
-                    IconButton(onClick = onOpenOverlayIgnore) {
-                        Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Ignored overlays")
-                    }
-                    IconButton(onClick = onOpenPause) {
-                        Icon(Icons.Filled.PauseCircle, contentDescription = "Pause")
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = { showHelp = true }) {
+                            Icon(Icons.Filled.Info, contentDescription = "Shortcut setup help")
+                        }
+                        IconButton(onClick = onOpenSchedules) {
+                            Icon(Icons.Filled.DateRange, contentDescription = "Schedules")
+                        }
+                        IconButton(onClick = onOpenAppearance) {
+                            Icon(Icons.Filled.Palette, contentDescription = "Appearance")
+                        }
+                        IconButton(onClick = onOpenPause) {
+                            Icon(Icons.Filled.PauseCircle, contentDescription = "Pause")
+                        }
                     }
                 }
-            )
+            }
         }
     ) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding).verticalScroll(rememberScrollState())) {
@@ -429,28 +465,32 @@ private fun MainScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Global App List", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Global App List",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
                     Text(
                         "Whitelist / Blacklist settings",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                OutlinedButton(onClick = onOpenWhitelist) { Text("Open") }
+                MainScreenActionButton(onClick = onOpenWhitelist)
             }
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
             // 2. OS Events
             Text(
                 "OS Events",
                 style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.primary,
+                color = MaterialTheme.colorScheme.secondary,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
             )
             Column(modifier = Modifier.padding(horizontal = 16.dp)) {
                 Column(modifier = Modifier.padding(vertical = 6.dp)) {
                     Text(
                         "App Switcher",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 4.dp)
                     )
@@ -461,23 +501,8 @@ private fun MainScreen(
                 }
                 Column(modifier = Modifier.padding(vertical = 6.dp)) {
                     Text(
-                        "Notification Center",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 2.dp)
-                    )
-                    Text(
-                        "Disabled — detection is unreliable and can misclassify System UI overlays like volume",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 4.dp)
-                    )
-                    SystemUiModeToggle(current = "ignore", enabled = false, onSelect = { })
-                }
-                Column(modifier = Modifier.padding(vertical = 6.dp)) {
-                    Text(
                         "Lock Screen",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 4.dp)
                     )
@@ -489,13 +514,13 @@ private fun MainScreen(
                 Column(modifier = Modifier.padding(vertical = 6.dp)) {
                     Text(
                         "Notification Reply (Typing)",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 2.dp)
                     )
                     Text(
                         "Applies when typing a reply directly in a notification",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 4.dp)
                     )
@@ -507,13 +532,13 @@ private fun MainScreen(
                 Column(modifier = Modifier.padding(vertical = 6.dp)) {
                     Text(
                         "Power Menu",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 2.dp)
                     )
                     Text(
                         "Disable recommended — keeps emergency button visible",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 4.dp)
                     )
@@ -524,24 +549,49 @@ private fun MainScreen(
                 }
             }
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            // 3. Photo Viewer
+            // 3. Ignored Overlays
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Photo Viewer", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Ignored Overlays",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    Text(
+                        "Apps to ignore for overlay detection",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                MainScreenActionButton(onClick = onOpenOverlayIgnore)
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            // 4. Photo Viewer
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Photo Viewer",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
                     Text(
                         "Per-app auto-disable settings",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                OutlinedButton(onClick = onOpenPhotoViewer) { Text("Open") }
+                MainScreenActionButton(onClick = onOpenPhotoViewer)
             }
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            // 4. Web Shortcuts
+            // 5. Web Shortcuts
 
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
@@ -549,31 +599,39 @@ private fun MainScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Web Shortcuts", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Web Shortcuts",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
                     Text(
                         "PWAs and browser shortcuts",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                OutlinedButton(onClick = onOpenWebShortcuts) { Text("Open") }
+                MainScreenActionButton(onClick = onOpenWebShortcuts)
             }
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            // 5. Permissions
+            // 6. Permissions
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Permissions", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Permissions",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
                     Text(
                         "Grant required app permissions",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                OutlinedButton(onClick = onOpenPermissions) { Text("Open") }
+                MainScreenActionButton(onClick = onOpenPermissions)
             }
         }
     }
@@ -712,15 +770,28 @@ private fun AdbCommand(cmd: String) {
     Text(cmd, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace))
 }
 
+@Composable
+private fun MainScreenActionButton(onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.secondary,
+            contentColor = MaterialTheme.colorScheme.onSecondary
+        )
+    ) {
+        Text("Open")
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SystemUiModeToggle(current: String, onSelect: (String) -> Unit) {
+internal fun SystemUiModeToggle(current: String, onSelect: (String) -> Unit) {
     SystemUiModeToggle(current = current, enabled = true, onSelect = onSelect)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SystemUiModeToggle(current: String, enabled: Boolean, onSelect: (String) -> Unit) {
+internal fun SystemUiModeToggle(current: String, enabled: Boolean, onSelect: (String) -> Unit) {
     val options = listOf("ignore" to "Ignore", "enable" to "Enable", "disable" to "Disable")
     SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.45f)) {
         options.forEachIndexed { index, (value, label) ->
