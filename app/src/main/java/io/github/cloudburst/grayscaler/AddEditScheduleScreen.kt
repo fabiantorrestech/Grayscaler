@@ -188,6 +188,11 @@ fun AddEditScheduleScreen(
                         Text(formatTime(endState.hour, endState.minute))
                     }
                 }
+                Text(
+                    "If end time is earlier than start time, the schedule continues overnight into the next day.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             HorizontalDivider()
@@ -289,8 +294,8 @@ fun AddEditScheduleScreen(
                 onClick = {
                     if (label.isBlank()) { validationError = "Label is required."; return@Button }
                     if (selectedDays.isEmpty()) { validationError = "Select at least one day."; return@Button }
-                    if (startState.hour * 60 + startState.minute >= endState.hour * 60 + endState.minute) {
-                        validationError = "End time must be after start time."
+                    if (startState.hour == endState.hour && startState.minute == endState.minute) {
+                        validationError = "Start time and end time cannot be the same."
                         return@Button
                     }
                     val candidate = Schedule(

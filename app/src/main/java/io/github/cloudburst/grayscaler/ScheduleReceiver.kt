@@ -34,11 +34,7 @@ class ScheduleReceiver : BroadcastReceiver() {
         store.load()
         val manager = ScheduleManager(context)
         manager.registerAll(store.schedules)
-        val activeSchedule = store.findActiveScheduleNow()
-        if (activeSchedule != null) {
-            store.scheduleOverrideActive = true
-            store.activeScheduleId = activeSchedule.id
-        }
+        syncActiveScheduleNow(store)
         GrayscaleStateManager.invalidate(context)
     }
 
@@ -49,8 +45,7 @@ class ScheduleReceiver : BroadcastReceiver() {
         val schedule = store.schedules.find { it.id == scheduleId } ?: return
         if (!schedule.enabled) return
 
-        store.scheduleOverrideActive = true
-        store.activeScheduleId = scheduleId
+        syncActiveScheduleNow(store, scheduleId)
         GrayscaleStateManager.invalidate(context)
 
         // Re-register next week's alarm for this day
@@ -63,13 +58,24 @@ class ScheduleReceiver : BroadcastReceiver() {
         store.load()
         val schedule = store.schedules.find { it.id == scheduleId } ?: return
 
-        if (!store.isAnyScheduleActiveNow()) {
-            store.scheduleOverrideActive = false
-            store.activeScheduleId = null
-        }
+        syncActiveScheduleNow(store)
         GrayscaleStateManager.invalidate(context)
 
         ScheduleManager(context).register(schedule)
+    }
+
+    private fun syncActiveScheduleNow(store: ScheduleStore, preferredScheduleId: String? = null) {
+        val activeSchedule = when {
+            preferredScheduleId != null -> store.schedules.find { it.id == preferredScheduleId && it.enabled }?.takeIf {
+                val cal = java.util.Calendar.getInstance()
+                val day = cal.get(java.util.Calendar.DAY_OF_WEEK)
+                val minutes = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
+                it.activeAt(day, minutes)
+            } ?: store.findActiveScheduleNow()
+            else -> store.findActiveScheduleNow()
+        }
+        store.scheduleOverrideActive = activeSchedule != null
+        store.activeScheduleId = activeSchedule?.id
     }
 
     private fun onSetEnabled(context: Context, intent: Intent) {

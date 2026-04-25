@@ -34,8 +34,9 @@ class ScheduleManager(private val context: Context) {
     }
 
     private fun setAlarm(schedule: Schedule, day: Int, isStart: Boolean) {
+        val alarmDay = if (isStart || !schedule.isOvernight()) day else Schedule.nextDay(day)
         val triggerAt = nextOccurrence(
-            day,
+            alarmDay,
             if (isStart) schedule.startHour else schedule.endHour,
             if (isStart) schedule.startMinute else schedule.endMinute
         )

@@ -145,11 +145,8 @@ class MainService : AccessibilityService() {
         root?.recycle()
         if (rootPkg != null && rootPkg != pkg) return
 
-        // 4. Save foreground context for unlock restore, then apply per-app logic
-        prefs.edit()
-            .putString("last_foreground_pkg", pkg)
-            .putString("last_foreground_class", className)
-            .apply()
+        // 4. Apply per-app logic. GrayscaleStateManager is responsible for deciding whether this
+        //    foreground is meaningful enough to become the restore/invalidation context.
         handleForegroundApp(pkg, className)
     }
 

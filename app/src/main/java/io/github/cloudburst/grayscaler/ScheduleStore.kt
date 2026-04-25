@@ -52,15 +52,10 @@ class ScheduleStore(private val context: Context) {
         save()
     }
 
-    // Returns the first enabled existing schedule that overlaps with the candidate on any shared
-    // day and time range. Does not flag conflicts with the candidate's own id (for edits).
-    // TODO: Overnight schedules (endTime < startTime) are not currently supported.
     fun conflictsWith(candidate: Schedule): Schedule? {
         return schedules.firstOrNull { existing ->
             if (existing.id == candidate.id || !existing.enabled) return@firstOrNull false
-            val sharedDays = existing.days.intersect(candidate.days)
-            if (sharedDays.isEmpty()) return@firstOrNull false
-            candidate.startMinutes() < existing.endMinutes() && existing.startMinutes() < candidate.endMinutes()
+            schedulesOverlap(existing, candidate)
         }
     }
 
@@ -72,10 +67,35 @@ class ScheduleStore(private val context: Context) {
         val currentMinutes = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
         return schedules.firstOrNull { schedule ->
             schedule.enabled &&
-            schedule.days.contains(currentDay) &&
-            currentMinutes >= schedule.startMinutes() &&
-            currentMinutes < schedule.endMinutes()
+            schedule.activeAt(currentDay, currentMinutes)
         }
+    }
+
+    private fun schedulesOverlap(a: Schedule, b: Schedule): Boolean {
+        val aSegments = weeklySegments(a)
+        val bSegments = weeklySegments(b)
+        return aSegments.any { (aStart, aEnd) ->
+            bSegments.any { (bStart, bEnd) ->
+                aStart < bEnd && bStart < aEnd
+            }
+        }
+    }
+
+    private fun weeklySegments(schedule: Schedule): List<Pair<Int, Int>> {
+        val weekMinutes = 7 * 24 * 60
+        val segments = mutableListOf<Pair<Int, Int>>()
+        for (day in schedule.days) {
+            val dayStart = (day - 1) * 24 * 60
+            val start = dayStart + schedule.startMinutes()
+            val end = start + schedule.durationMinutes()
+            if (end <= weekMinutes) {
+                segments += start to end
+            } else {
+                segments += start to weekMinutes
+                segments += 0 to (end - weekMinutes)
+            }
+        }
+        return segments
     }
 
     private fun serializeLine(s: Schedule): String {

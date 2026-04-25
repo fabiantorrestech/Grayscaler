@@ -21,10 +21,26 @@ data class Schedule(
 ) : Parcelable {
     fun startMinutes() = startHour * 60 + startMinute
     fun endMinutes() = endHour * 60 + endMinute
+    fun isOvernight() = endMinutes() < startMinutes()
+    fun durationMinutes() = if (isOvernight()) (24 * 60 - startMinutes()) + endMinutes() else endMinutes() - startMinutes()
 
     fun profileApps(): Set<String> = when (profileMode) {
         "whitelist" -> profileWhitelist
         "blacklist" -> profileBlacklist
         else -> emptySet()
+    }
+
+    fun activeAt(dayOfWeek: Int, minutesOfDay: Int): Boolean {
+        return if (!isOvernight()) {
+            days.contains(dayOfWeek) && minutesOfDay >= startMinutes() && minutesOfDay < endMinutes()
+        } else {
+            (days.contains(dayOfWeek) && minutesOfDay >= startMinutes()) ||
+                (days.contains(previousDay(dayOfWeek)) && minutesOfDay < endMinutes())
+        }
+    }
+
+    companion object {
+        fun nextDay(dayOfWeek: Int): Int = if (dayOfWeek == java.util.Calendar.SATURDAY) java.util.Calendar.SUNDAY else dayOfWeek + 1
+        fun previousDay(dayOfWeek: Int): Int = if (dayOfWeek == java.util.Calendar.SUNDAY) java.util.Calendar.SATURDAY else dayOfWeek - 1
     }
 }
