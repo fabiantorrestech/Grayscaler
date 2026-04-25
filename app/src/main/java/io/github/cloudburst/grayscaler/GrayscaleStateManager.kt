@@ -87,6 +87,27 @@ object GrayscaleStateManager {
         }
     }
 
+    fun applySystemEventMode(context: Context, mode: String): Boolean {
+        val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+
+        if (prefs.getLong("pause_until", 0L) > System.currentTimeMillis()) {
+            applyToSystem(context, Decision.DISABLE)
+            return true
+        }
+
+        if (!prefs.getBoolean("grayscaler_enabled", true)) {
+            applyToSystem(context, Decision.DISABLE)
+            return true
+        }
+
+        when (mode) {
+            "enable" -> applyToSystem(context, Decision.ENABLE)
+            "disable" -> applyToSystem(context, Decision.DISABLE)
+            else -> return false
+        }
+        return true
+    }
+
     private fun evaluateAppList(pkg: String, context: Context): Decision {
         val store = appListStore ?: AppListStore(context).also { it.load(); appListStore = it }
         return if (store.shouldGrayScale(pkg)) Decision.ENABLE else Decision.DISABLE

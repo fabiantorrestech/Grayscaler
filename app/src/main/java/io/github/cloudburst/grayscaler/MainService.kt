@@ -29,10 +29,10 @@ class MainService : AccessibilityService() {
             val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
             when (intent.action) {
                 Intent.ACTION_SCREEN_OFF -> {
-                    when (prefs.getString("lockscreen_mode", "ignore")) {
-                        "enable" -> GrayscaleStateManager.applyToSystem(context, GrayscaleStateManager.Decision.ENABLE)
-                        "disable" -> GrayscaleStateManager.applyToSystem(context, GrayscaleStateManager.Decision.DISABLE)
-                    }
+                    GrayscaleStateManager.applySystemEventMode(
+                        context,
+                        prefs.getString("lockscreen_mode", "ignore") ?: "ignore"
+                    )
                 }
                 Intent.ACTION_USER_PRESENT -> {
                     GrayscaleStateManager.invalidate(context)
@@ -62,10 +62,10 @@ class MainService : AccessibilityService() {
             val className = event.className?.toString() ?: ""
             if (!INLINE_REPLY_KEYWORDS.any { className.contains(it, ignoreCase = true) }) return
             val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
-            when (prefs.getString("inline_reply_mode", "ignore")) {
-                "enable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE)
-                "disable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
-            }
+            GrayscaleStateManager.applySystemEventMode(
+                this,
+                prefs.getString("inline_reply_mode", "ignore") ?: "ignore"
+            )
             return
         }
 
@@ -107,31 +107,31 @@ class MainService : AccessibilityService() {
             POWER_MENU_KEYWORDS.any { className.contains(it, ignoreCase = true) }
         when {
             isRecents -> {
-                when (prefs.getString("app_switcher_mode", "ignore")) {
-                    "enable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE)
-                    "disable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
-                }
+                GrayscaleStateManager.applySystemEventMode(
+                    this,
+                    prefs.getString("app_switcher_mode", "ignore") ?: "ignore"
+                )
                 return
             }
             isNotifShade -> {
-                when (prefs.getString("notification_center_mode", "ignore")) {
-                    "enable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE)
-                    "disable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
-                }
+                GrayscaleStateManager.applySystemEventMode(
+                    this,
+                    prefs.getString("notification_center_mode", "ignore") ?: "ignore"
+                )
                 return
             }
             isLockscreen -> {
-                when (prefs.getString("lockscreen_mode", "ignore")) {
-                    "enable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE)
-                    "disable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
-                }
+                GrayscaleStateManager.applySystemEventMode(
+                    this,
+                    prefs.getString("lockscreen_mode", "ignore") ?: "ignore"
+                )
                 return
             }
             isPowerMenu -> {
-                when (prefs.getString("power_menu_mode", "disable")) {
-                    "enable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE)
-                    "disable" -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
-                }
+                GrayscaleStateManager.applySystemEventMode(
+                    this,
+                    prefs.getString("power_menu_mode", "disable") ?: "disable"
+                )
                 return
             }
             pkg == "com.android.systemui" -> return

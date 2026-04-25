@@ -45,6 +45,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,6 +53,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -360,6 +362,12 @@ private fun MainScreen(
         )
         onDispose { context.contentResolver.unregisterContentObserver(observer) }
     }
+    LaunchedEffect(Unit) {
+        if (notifCenterMode != "ignore") {
+            notifCenterMode = "ignore"
+            prefs.edit().putString("notification_center_mode", "ignore").apply()
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -456,12 +464,15 @@ private fun MainScreen(
                         "Notification Center",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 2.dp)
+                    )
+                    Text(
+                        "Disabled — detection is unreliable and can misclassify System UI overlays like volume",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 4.dp)
                     )
-                    SystemUiModeToggle(notifCenterMode) { mode ->
-                        notifCenterMode = mode
-                        prefs.edit().putString("notification_center_mode", mode).apply()
-                    }
+                    SystemUiModeToggle(current = "ignore", enabled = false, onSelect = { })
                 }
                 Column(modifier = Modifier.padding(vertical = 6.dp)) {
                     Text(
@@ -704,11 +715,18 @@ private fun AdbCommand(cmd: String) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SystemUiModeToggle(current: String, onSelect: (String) -> Unit) {
+    SystemUiModeToggle(current = current, enabled = true, onSelect = onSelect)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SystemUiModeToggle(current: String, enabled: Boolean, onSelect: (String) -> Unit) {
     val options = listOf("ignore" to "Ignore", "enable" to "Enable", "disable" to "Disable")
-    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.45f)) {
         options.forEachIndexed { index, (value, label) ->
             SegmentedButton(
                 selected = current == value,
+                enabled = enabled,
                 onClick = { onSelect(value) },
                 shape = SegmentedButtonDefaults.itemShape(index, options.size),
                 label = { Text(label) }
