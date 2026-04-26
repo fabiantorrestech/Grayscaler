@@ -17,6 +17,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -30,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -37,10 +39,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.graphics.drawable.toBitmap
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -77,10 +79,24 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
     }
 
     var whitelist by remember { mutableStateOf(effectiveStore.whitelist) }
-    val (apps, setApps) = remember { mutableStateOf(effectiveStore.apps) }
+    val (apps, setApps) = remember { mutableStateOf<List<Pair<CatalogApp, Boolean>>>(emptyList()) }
+    var appsLoading by remember { mutableStateOf(true) }
     var selectedTab by remember { mutableIntStateOf(1) }
     var showClearConfirm by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+
+    suspend fun refreshApps() {
+        appsLoading = true
+        val loadedApps = withContext(Dispatchers.Default) {
+            AppCatalogRepository.snapshotApps(context, effectiveStore.toggledApps)
+        }
+        setApps(loadedApps)
+        appsLoading = false
+    }
+
+    LaunchedEffect(effectiveStore) {
+        refreshApps()
+    }
 
     val tabLabels = if (whitelist) listOf("Whitelisted", "All", "Others") else listOf("Blacklisted", "All", "Others")
     val filteredApps = when (selectedTab) {
@@ -112,7 +128,7 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
                             effectiveStore.whitelist = newValue
                             effectiveStore.invalidate()
                             whitelist = newValue
-                            setApps(effectiveStore.apps)
+                            setApps(AppCatalogRepository.snapshotApps(context, effectiveStore.toggledApps))
                         },
                         modifier = Modifier.padding(end = 8.dp)
                     )
@@ -151,7 +167,9 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
             )
             val listState = rememberLazyListState()
             Box(modifier = Modifier.fillMaxSize()) {
-                if (filteredApps.isEmpty()) {
+                if (appsLoading) {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                } else if (filteredApps.isEmpty()) {
                     Text(
                         text = if (searchQuery.isBlank()) "No apps" else "No apps match \"$searchQuery\"",
                         modifier = Modifier.align(Alignment.Center),
@@ -171,7 +189,7 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Image(
-                                    bitmap = app.icon.current.toBitmap().asImageBitmap(),
+                                    bitmap = app.icon,
                                     contentDescription = null,
                                     modifier = Modifier.size(40.dp)
                                 )
@@ -186,7 +204,7 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
                                     onCheckedChange = {
                                         effectiveStore.toggleApp(app.packageName)
                                         effectiveStore.invalidate()
-                                        setApps(effectiveStore.apps)
+                                        setApps(AppCatalogRepository.snapshotApps(context, effectiveStore.toggledApps))
                                     }
                                 )
                             }
@@ -211,7 +229,7 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
                     if (whitelist) effectiveStore.whitelistedApps = emptySet()
                     else effectiveStore.blacklistedApps = emptySet()
                     effectiveStore.invalidate()
-                    setApps(effectiveStore.apps)
+                    setApps(AppCatalogRepository.snapshotApps(context, effectiveStore.toggledApps))
                     showClearConfirm = false
                 }) { Text("Clear") }
             },

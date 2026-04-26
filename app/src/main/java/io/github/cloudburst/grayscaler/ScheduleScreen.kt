@@ -13,6 +13,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -25,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,15 +35,28 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.Calendar
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScheduleScreen(onBack: () -> Unit, onAddSchedule: () -> Unit, onEditSchedule: (Schedule) -> Unit) {
     val context = LocalContext.current
-    val store = remember { ScheduleStore(context).also { it.load() } }
-    var schedules by remember { mutableStateOf(store.schedules.toList()) }
+    val store = remember { ScheduleStore(context) }
+    var schedules by remember { mutableStateOf<List<Schedule>>(emptyList()) }
+    var schedulesLoading by remember { mutableStateOf(true) }
     var pendingDeleteId by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(store) {
+        schedulesLoading = true
+        val loadedSchedules = withContext(Dispatchers.IO) {
+            store.load()
+            store.schedules.toList()
+        }
+        schedules = loadedSchedules
+        schedulesLoading = false
+    }
 
     Scaffold(
         topBar = {
@@ -60,7 +75,15 @@ fun ScheduleScreen(onBack: () -> Unit, onAddSchedule: () -> Unit, onEditSchedule
             }
         }
     ) { innerPadding ->
-        if (schedules.isEmpty()) {
+        if (schedulesLoading) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(innerPadding),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                CircularProgressIndicator()
+            }
+        } else if (schedules.isEmpty()) {
             Column(
                 modifier = Modifier.fillMaxSize().padding(innerPadding),
                 verticalArrangement = Arrangement.Center,
