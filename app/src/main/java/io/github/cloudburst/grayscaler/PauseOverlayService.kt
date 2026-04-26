@@ -192,7 +192,7 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        "Pause Grayscaler",
+                                        "Pause GrayScaler+",
                                         style = MaterialTheme.typography.headlineSmall,
                                         modifier = Modifier.weight(1f)
                                     )
@@ -217,17 +217,17 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
 
                                 val isPaused = pauseUntil > now
                                 val statusText = when {
-                                    !grayscalerEnabled -> "GrayScaler Off"
+                                    !grayscalerEnabled -> "GrayScaler+ Off"
                                     isPaused -> {
                                         val totalSec = (pauseUntil - now) / 1000
                                         val m = totalSec / 60
                                         val s = totalSec % 60
                                         val countdown = if (m > 0) "${m}m ${s}s" else "${s}s"
-                                        "GrayScaler On · Paused · $countdown"
+                                        "GrayScaler+ On · Paused · $countdown"
                                     }
-                                    lastDecision == GrayscaleStateManager.Decision.ENABLE -> "GrayScaler On · Enabled"
-                                    lastDecision == GrayscaleStateManager.Decision.DISABLE -> "GrayScaler On · Disabled"
-                                    else -> "GrayScaler On · Not Available"
+                                    lastDecision == GrayscaleStateManager.Decision.ENABLE -> "GrayScaler+ On · Enabled"
+                                    lastDecision == GrayscaleStateManager.Decision.DISABLE -> "GrayScaler+ On · Disabled"
+                                    else -> "GrayScaler+ On · Not Available"
                                 }
                                 val statusColor = when {
                                     !grayscalerEnabled -> MaterialTheme.colorScheme.error

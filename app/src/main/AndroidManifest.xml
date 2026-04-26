@@ -82,7 +82,7 @@
             android:name=".GrayscalerTileService"
             android:exported="true"
             android:icon="@drawable/ic_qs_tile"
-            android:label="Grayscaler"
+            android:label="GrayScaler+"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />

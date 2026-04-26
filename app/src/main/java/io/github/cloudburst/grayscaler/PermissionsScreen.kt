@@ -154,7 +154,7 @@ fun PermissionsScreen(onBack: () -> Unit) {
                         try {
                             if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
                                 Shizuku.requestPermission(0)
-                                Toast.makeText(context, "Authorize Grayscaler in Shizuku, then try again", Toast.LENGTH_LONG).show()
+                                Toast.makeText(context, "Authorize GrayScaler+ in Shizuku, then try again", Toast.LENGTH_LONG).show()
                             } else {
                                 thread {
                                     command("pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS") { _, _, _ -> }
@@ -187,7 +187,7 @@ fun PermissionsScreen(onBack: () -> Unit) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         StatusIcon(accessibilityEnabled)
                         Column(modifier = Modifier.padding(start = 12.dp)) {
-                            Text("Grayscaler Service", style = MaterialTheme.typography.bodyLarge)
+                            Text("GrayScaler+ Service", style = MaterialTheme.typography.bodyLarge)
                             Text(
                                 if (accessibilityEnabled) "Enabled" else "Disabled — tap to enable",
                                 style = MaterialTheme.typography.bodySmall,

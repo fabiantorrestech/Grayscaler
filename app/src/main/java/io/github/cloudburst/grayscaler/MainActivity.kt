@@ -156,14 +156,14 @@ class MainActivity : ComponentActivity() {
             nm.createNotificationChannel(
                 android.app.NotificationChannel(
                     ScheduleReceiver.CHANNEL_ID_STATIC,
-                    "Grayscaler Paused",
+                    "GrayScaler+ Paused",
                     android.app.NotificationManager.IMPORTANCE_LOW
                 )
             )
             nm.createNotificationChannel(
                 android.app.NotificationChannel(
                     ScheduleReceiver.CHANNEL_ID_COUNTDOWN,
-                    "Grayscaler Countdown",
+                    "GrayScaler+ Countdown",
                     android.app.NotificationManager.IMPORTANCE_LOW
                 )
             )
@@ -419,15 +419,17 @@ private fun MainScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .statusBarsPadding()
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            "Grayscaler",
-                            style = MaterialTheme.typography.headlineSmall,
+                            "GrayScaler+",
+                            style = MaterialTheme.typography.headlineSmall.copy(
+                                fontSize = MaterialTheme.typography.headlineSmall.fontSize * 1.25f
+                            ),
                             modifier = Modifier
                                 .weight(1f)
                                 .pointerInput(Unit) {
@@ -674,7 +676,7 @@ private fun MainScreen(
             },
             title = { Text("Enable Notifications") },
             text = {
-                Text("Grayscaler can show a persistent notification while a pause is active so you can track when grayscale will re-enable. Grant notification permission in Permissions.")
+                Text("GrayScaler+ can show a persistent notification while a pause is active so you can track when grayscale will re-enable. Grant notification permission in Permissions.")
             },
             confirmButton = {
                 TextButton(onClick = {
