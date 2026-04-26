@@ -182,8 +182,9 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
             // 2. Quick Pause
             Text("Quick Pause", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
 
-            val row1 = listOf("30s" to 30L, "1m" to 60L, "3m" to 180L, "5m" to 300L)
-            val row2 = listOf("10m" to 600L, "15m" to 900L, "30m" to 1800L, "1h" to 3600L)
+            val row1 = listOf("5s" to 5L, "15s" to 15L, "30s" to 30L, "1m" to 60L)
+            val row2 = listOf("3m" to 180L, "5m" to 300L, "10m" to 600L, "15m" to 900L)
+            val row3 = listOf("30m" to 1800L, "1h" to 3600L)
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 row1.forEach { (label, secs) ->
@@ -196,6 +197,15 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
             }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 row2.forEach { (label, secs) ->
+                    FilledTonalButton(
+                        onClick = { applyPause(secs) },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
+                    ) { Text(label, style = MaterialTheme.typography.labelLarge) }
+                }
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                row3.forEach { (label, secs) ->
                     FilledTonalButton(
                         onClick = { applyPause(secs) },
                         modifier = Modifier.weight(1f),

@@ -237,19 +237,42 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                     else -> MaterialTheme.colorScheme.onSurfaceVariant
                                 }
                                 Row(
+                                    modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = statusColor,
-                                        modifier = Modifier.size(8.dp)
-                                    ) {}
-                                    Text(
-                                        statusText,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = statusColor
-                                    )
+                                    Row(
+                                        modifier = Modifier.weight(1f),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = statusColor,
+                                            modifier = Modifier.size(8.dp)
+                                        ) {}
+                                        Text(
+                                            statusText,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = statusColor
+                                        )
+                                    }
+                                    if (isPaused) {
+                                        TextButton(
+                                            onClick = {
+                                                cancelPause()
+                                                pauseUntil = 0L
+                                                now = System.currentTimeMillis()
+                                                lastDecision = GrayscaleStateManager.lastDecision
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                            colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                                                contentColor = MaterialTheme.colorScheme.tertiary
+                                            )
+                                        ) {
+                                            Text("Cancel")
+                                        }
+                                    }
                                 }
 
                                 Row(
@@ -281,8 +304,8 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                     color = MaterialTheme.colorScheme.secondary
                                 )
 
-                                val row1 = listOf("30s" to 30L, "1m" to 60L, "3m" to 180L, "5m" to 300L)
-                                val row2 = listOf("10m" to 600L, "15m" to 900L, "30m" to 1800L)
+                                val row1 = listOf("5s" to 5L, "15s" to 15L, "30s" to 30L, "1m" to 60L)
+                                val row2 = listOf("3m" to 180L, "5m" to 300L, "10m" to 600L, "15m" to 900L)
 
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -307,6 +330,26 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     row2.forEach { (label, seconds) ->
+                                        FilledTonalButton(
+                                            onClick = { applyPauseOrConfirm(seconds) },
+                                            modifier = Modifier.weight(1f),
+                                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                                            colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
+                                                containerColor = MaterialTheme.colorScheme.secondary,
+                                                contentColor = MaterialTheme.colorScheme.onSecondary
+                                            )
+                                        ) {
+                                            Text(label, style = MaterialTheme.typography.labelLarge)
+                                        }
+                                    }
+                                }
+                                val row3 = listOf("30m" to 1800L, "1h" to 3600L)
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    row3.forEach { (label, seconds) ->
                                         FilledTonalButton(
                                             onClick = { applyPauseOrConfirm(seconds) },
                                             modifier = Modifier.weight(1f),
@@ -410,6 +453,13 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         val intent = Intent(ScheduleReceiver.ACTION_APPLY_PAUSE).apply {
             setPackage(packageName)
             putExtra(ScheduleReceiver.EXTRA_SECONDS, seconds)
+        }
+        sendBroadcast(intent)
+    }
+
+    private fun cancelPause() {
+        val intent = Intent(ScheduleReceiver.ACTION_PAUSE_END).apply {
+            setPackage(packageName)
         }
         sendBroadcast(intent)
     }
