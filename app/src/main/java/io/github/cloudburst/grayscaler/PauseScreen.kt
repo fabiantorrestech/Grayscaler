@@ -173,7 +173,7 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.primary
                             )
-                            Text("GrayScaler+ is active", style = MaterialTheme.typography.titleMedium)
+                            Text("Grayscaler+ is active", style = MaterialTheme.typography.titleMedium)
                         }
                     }
                 }

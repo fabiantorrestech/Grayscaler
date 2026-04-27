@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_qs_tile"
+        android:shortcutId="pause_overlay"
+        android:shortcutLongLabel="@string/shortcut_pause_overlay_long"
+        android:shortcutShortLabel="@string/shortcut_pause_overlay_short">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="io.github.cloudburst.grayscaler.PauseOverlayShortcutActivity"
+            android:targetPackage="io.github.cloudburst.grayscaler" />
+    </shortcut>
+</shortcuts>

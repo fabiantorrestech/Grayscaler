@@ -156,14 +156,14 @@ class MainActivity : ComponentActivity() {
             nm.createNotificationChannel(
                 android.app.NotificationChannel(
                     ScheduleReceiver.CHANNEL_ID_STATIC,
-                    "GrayScaler+ Paused",
+                    "Grayscaler+ Paused",
                     android.app.NotificationManager.IMPORTANCE_LOW
                 )
             )
             nm.createNotificationChannel(
                 android.app.NotificationChannel(
                     ScheduleReceiver.CHANNEL_ID_COUNTDOWN,
-                    "GrayScaler+ Countdown",
+                    "Grayscaler+ Countdown",
                     android.app.NotificationManager.IMPORTANCE_LOW
                 )
             )
@@ -277,6 +277,7 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
                 onOpenPhotoViewer = { navController.navigate("photo_viewer") },
                 onOpenWhitelist = { navController.navigate("whitelist") },
                 onOpenWebShortcuts = { navController.navigate("web_shortcuts") },
+                onOpenBackupRestore = { navController.navigate("backup_restore") },
                 onOpenPause = { navController.navigate("pause") },
                 onOpenDeveloper = { navController.navigate("developer") }
             )
@@ -335,6 +336,9 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
         composable("web_shortcuts") {
             WebShortcutScreen(store = webShortcutStore, onBack = { navController.popBackStack() })
         }
+        composable("backup_restore") {
+            BackupRestoreScreen(onBack = { navController.popBackStack() })
+        }
         composable("pause") {
             PauseScreen(
                 onBack = { navController.popBackStack() },
@@ -358,6 +362,7 @@ private fun MainScreen(
     onOpenPhotoViewer: () -> Unit,
     onOpenWhitelist: () -> Unit,
     onOpenWebShortcuts: () -> Unit,
+    onOpenBackupRestore: () -> Unit,
     onOpenPause: () -> Unit,
     onOpenDeveloper: () -> Unit
 ) {
@@ -426,7 +431,7 @@ private fun MainScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            "GrayScaler+",
+                            "Grayscaler+",
                             style = MaterialTheme.typography.headlineSmall.copy(
                                 fontSize = MaterialTheme.typography.headlineSmall.fontSize * 1.25f
                             ),
@@ -645,7 +650,28 @@ private fun MainScreen(
                 MainScreenActionButton(onClick = onOpenWebShortcuts)
             }
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            // 6. Permissions
+            // 6. Backup & Restore
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Backup & Restore",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    Text(
+                        "Export or import all saved settings",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                MainScreenActionButton(onClick = onOpenBackupRestore)
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            // 7. Permissions
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -676,7 +702,7 @@ private fun MainScreen(
             },
             title = { Text("Enable Notifications") },
             text = {
-                Text("GrayScaler+ can show a persistent notification while a pause is active so you can track when grayscale will re-enable. Grant notification permission in Permissions.")
+                Text("Grayscaler+ can show a persistent notification while a pause is active so you can track when grayscale will re-enable. Grant notification permission in Permissions.")
             },
             confirmButton = {
                 TextButton(onClick = {

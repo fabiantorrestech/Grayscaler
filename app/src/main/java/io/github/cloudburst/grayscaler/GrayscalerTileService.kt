@@ -25,7 +25,7 @@ class GrayscalerTileService : TileService() {
         val enabled = prefs.getBoolean("grayscaler_enabled", true)
         qsTile?.apply {
             state = if (enabled) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
-            label = "GrayScaler+"
+            label = "Grayscaler+"
             updateTile()
         }
     }
