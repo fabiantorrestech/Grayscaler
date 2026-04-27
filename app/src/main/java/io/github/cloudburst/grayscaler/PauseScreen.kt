@@ -67,6 +67,12 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
     var countdownNotifEnabled by remember {
         mutableStateOf(prefs.getBoolean("pause_countdown_notif_enabled", true))
     }
+    var persistentOverlayEnabled by remember {
+        mutableStateOf(prefs.getBoolean("persistent_overlay_mode", false))
+    }
+    val appearanceSettings = rememberAppearanceSettings(context)
+    val isMaterialYou = appearanceSettings.useDynamicTheme && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val sectionColor = if (isMaterialYou) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
 
     val hasNotifPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         ContextCompat.checkSelfPermission(
@@ -180,7 +186,7 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
             }
 
             // 2. Quick Pause
-            Text("Quick Pause", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            Text("Quick Pause", style = MaterialTheme.typography.titleMedium, color = sectionColor)
 
             val row1 = listOf("5s" to 5L, "15s" to 15L, "30s" to 30L, "1m" to 60L)
             val row2 = listOf("3m" to 180L, "5m" to 300L, "10m" to 600L, "15m" to 900L)
@@ -217,7 +223,7 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
             HorizontalDivider()
 
             // 3. Custom Duration
-            Text("Custom Duration", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            Text("Custom Duration", style = MaterialTheme.typography.titleMedium, color = sectionColor)
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -278,7 +284,7 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
             Text(
                 "Notification Behavior",
                 style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.primary
+                color = sectionColor
             )
 
             if (hasNotifPermission) {
@@ -323,6 +329,36 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
                         TextButton(onClick = onOpenPermissions) { Text("Open") }
                     }
                 }
+            }
+
+            HorizontalDivider()
+
+            Text(
+                "Shortcut Behavior",
+                style = MaterialTheme.typography.titleSmall,
+                color = sectionColor
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text("Persistent overlay mode", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Keeps the pause menu pre-loaded so shortcuts work inside system apps like Settings",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = persistentOverlayEnabled,
+                    onCheckedChange = { enabled ->
+                        persistentOverlayEnabled = enabled
+                        prefs.edit().putBoolean("persistent_overlay_mode", enabled).apply()
+                    }
+                )
             }
         }
     }

@@ -86,8 +86,14 @@ class ScheduleReceiver : BroadcastReceiver() {
     }
 
     private fun onPauseGrayscaler(context: Context) {
-        val serviceIntent = Intent(context, PauseOverlayService::class.java)
-        context.startService(serviceIntent)
+        val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("persistent_overlay_mode", false)) {
+            context.sendBroadcast(Intent(MainService.ACTION_SHOW_PAUSE_OVERLAY).apply {
+                setPackage(context.packageName)
+            })
+        } else {
+            context.startService(Intent(context, PauseOverlayService::class.java))
+        }
     }
 
     private fun onApplyPause(context: Context, intent: Intent) {

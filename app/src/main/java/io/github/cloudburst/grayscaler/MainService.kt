@@ -5,14 +5,40 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
+import android.graphics.PixelFormat
 import android.net.Uri
+import android.os.Build
 import android.util.Log
+import android.view.View
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.savedstate.SavedStateRegistry
+import androidx.savedstate.SavedStateRegistryController
+import androidx.savedstate.SavedStateRegistryOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import io.github.cloudburst.grayscaler.ui.theme.GrayscalerTheme
 
-class MainService : AccessibilityService() {
+class MainService : AccessibilityService(), LifecycleOwner, SavedStateRegistryOwner {
+
+    private val lifecycleRegistry = LifecycleRegistry(this)
+    private val savedStateRegistryController = SavedStateRegistryController.create(this)
+
+    override val lifecycle: Lifecycle get() = lifecycleRegistry
+    override val savedStateRegistry: SavedStateRegistry get() = savedStateRegistryController.savedStateRegistry
+
+    private lateinit var windowManager: WindowManager
+    private var overlayView: ComposeView? = null
+    private var overlayParams: WindowManager.LayoutParams? = null
 
     // Package name of the browser currently in foreground, null if not a browser
     private var currentBrowserPkg: String? = null
@@ -46,17 +72,111 @@ class MainService : AccessibilityService() {
         }
     }
 
+    private val overlayReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == ACTION_SHOW_PAUSE_OVERLAY) showPersistentOverlay()
+        }
+    }
+
+    private val prefChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
+        if (key == "persistent_overlay_mode") {
+            if (prefs.getBoolean(key, false)) registerPersistentOverlay() else unregisterPersistentOverlay()
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
+        savedStateRegistryController.performRestore(null)
+        lifecycleRegistry.currentState = Lifecycle.State.CREATED
+        lifecycleRegistry.currentState = Lifecycle.State.STARTED
+        lifecycleRegistry.currentState = Lifecycle.State.RESUMED
+
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+
         registerReceiver(screenReceiver, IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_USER_PRESENT)
         })
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(overlayReceiver, IntentFilter(ACTION_SHOW_PAUSE_OVERLAY), RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(overlayReceiver, IntentFilter(ACTION_SHOW_PAUSE_OVERLAY))
+        }
+
+        val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+        prefs.registerOnSharedPreferenceChangeListener(prefChangeListener)
+        if (prefs.getBoolean("persistent_overlay_mode", false)) registerPersistentOverlay()
     }
 
     override fun onDestroy() {
+        lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         unregisterReceiver(screenReceiver)
+        unregisterReceiver(overlayReceiver)
+        getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+            .unregisterOnSharedPreferenceChangeListener(prefChangeListener)
+        unregisterPersistentOverlay()
         super.onDestroy()
+    }
+
+    private fun registerPersistentOverlay() {
+        if (overlayView != null) return
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        )
+        overlayParams = params
+        val view = ComposeView(this).apply {
+            visibility = View.GONE
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
+            setViewTreeLifecycleOwner(this@MainService)
+            setViewTreeSavedStateRegistryOwner(this@MainService)
+            setContent {
+                GrayscalerTheme {
+                    PauseOverlayContent(
+                        onDismiss = { hidePersistentOverlay() },
+                        onOpenApp = {
+                            startActivity(
+                                Intent(this@MainService, MainActivity::class.java).apply {
+                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                                }
+                            )
+                            hidePersistentOverlay()
+                        }
+                    )
+                }
+            }
+        }
+        overlayView = view
+        windowManager.addView(view, params)
+    }
+
+    private fun unregisterPersistentOverlay() {
+        overlayView?.let { windowManager.removeView(it) }
+        overlayView = null
+        overlayParams = null
+    }
+
+    private fun showPersistentOverlay() {
+        val view = overlayView ?: return
+        val params = overlayParams ?: return
+        params.flags = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+        windowManager.updateViewLayout(view, params)
+        view.visibility = View.VISIBLE
+    }
+
+    private fun hidePersistentOverlay() {
+        val view = overlayView ?: return
+        val params = overlayParams ?: return
+        view.visibility = View.GONE
+        params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        windowManager.updateViewLayout(view, params)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -325,6 +445,8 @@ class MainService : AccessibilityService() {
     private enum class ShadeSignal { SHADE, EXCLUDED, UNKNOWN }
 
     companion object {
+        const val ACTION_SHOW_PAUSE_OVERLAY = "io.github.cloudburst.grayscaler.ACTION_SHOW_PAUSE_OVERLAY"
+
         const val PREF_EXPERIMENTAL_NOTIFICATION_SHADE_ENABLED = "experimental_notification_shade_enabled"
         const val PREF_EXPERIMENTAL_NOTIFICATION_SHADE_MODE = "experimental_notification_shade_mode"
         const val PREF_EXPERIMENTAL_NOTIFICATION_SHADE_DEBUG = "experimental_notification_shade_debug"
