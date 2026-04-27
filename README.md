@@ -42,13 +42,21 @@ The following are all additions on top of the original Grayscaler:
 
 ### Schedules
 - Create time-based schedules that enable grayscale on specific days and time windows
-- Each schedule picks its own app profile: use the global app list, or override it with a schedule-specific whitelist or blacklist
+- Each schedule can optionally override the global rule sets with its own schedule-specific:
+  - app list
+  - per-app views
+  - ignored overlays
+  - web shortcuts
+- Every schedule profile has its own enable/disable toggle, so a schedule can mix global and schedule-specific behavior per rule layer
+- Schedule profiles can import from global, import from another schedule, or clear back to default
+- Each schedule can be exported as its own backup file, and new schedules can be created by importing one of those backups
 - Multiple schedules can coexist; the most recently activated one wins
 - Schedules survive reboots via alarm registration on boot
 
 ### Web Shortcuts
 - Define URL or domain-based rules per browser
 - Enable or disable grayscale on specific websites regardless of the global app list
+- The same `ignore` / `enable` / `disable` behavior is also available inside schedule-specific web shortcut profiles
 - Browser favicon previews in the rule list
 
 ### Per-App Views (Activity-level control)
@@ -56,6 +64,7 @@ The following are all additions on top of the original Grayscaler:
 - Built-in presets for common apps (photo viewers, etc.)
 - Diagnostic mode: logs the current foreground class name in real time so you can find the right class to target
 - Custom entries: add any package + class combination manually
+- Schedules can also carry their own per-app view profiles and override the global set only during scheduled time
 
 ### System UI Behavior
 Configure grayscale behavior independently for each system context:
@@ -70,6 +79,7 @@ Configure grayscale behavior independently for each system context:
 - Gemini/Assistant group toggle
 - Built-in system ignores
 - Add custom packages manually
+- Schedules can also carry their own ignored-overlay profiles while still preserving the built-in system ignores
 
 ### Quick Settings Tile
 - Add a Grayscaler+ tile to your notification shade for an instant global on/off toggle
@@ -136,7 +146,8 @@ By default, the pause overlay is spawned on demand from a foreground service, wh
 ### Backup and Restore
 - Export all settings to a JSON file
 - Import settings from a previously exported file
-- Covers app lists, schedules, web rules, per-app views, appearance, and behavior prefs
+- Covers app lists, schedules, schedule-owned profile rules, web rules, per-app views, appearance, and behavior prefs
+- Individual schedules can also be exported as standalone JSON backup files from the schedule editor
 
 ---
 
@@ -146,17 +157,17 @@ By default, the pause overlay is spawned on demand from a foreground service, wh
 |---|----------------------------------------------------------------------|
 | Whitelist mode | Listed apps stay in color; everything else is grayscale              |
 | Blacklist mode | Listed apps are grayscale; everything else stays in color            |
-| Schedules | Day + time window triggers with per-schedule app profiles            |
+| Schedules | Day + time window triggers with per-schedule app list, view, overlay, and web profiles |
 | Pause | Timed pause with presets, custom input, notifications                |
-| Web shortcuts | Per-URL grayscale rules inside browsers                              |
-| Per-app views | Activity class-level matching within apps                            |
+| Web shortcuts | Per-URL grayscale rules inside browsers, globally or per schedule    |
+| Per-app views | Activity class-level matching within apps, globally or per schedule  |
 | System UI modes | Per-context behavior for lockscreen, shade, recents, etc.            |
-| Ignore list | Exclude overlays and floaters from triggering changes                |
+| Ignore list | Exclude overlays and floaters from triggering changes, globally or per schedule |
 | Quick Settings tile | One-tap toggle from the notification shade                           |
 | Automation | Broadcast intents for Tasker, Key Mapper, MacroDroid                 |
 | Persistent overlay | Pause menu available inside Settings and other system apps           |
 | Appearance | Material You, custom colors, custom fonts                            |
-| Backup/restore | Full settings export and import as JSON                              |
+| Backup/restore | Full settings export/import plus standalone per-schedule backup files |
 | Shizuku support | GUI permission granting via Shizuku (can use your own Shizuku forks) |
 | ADB fallback | Manual permission grant for users without Shizuku                    |
 

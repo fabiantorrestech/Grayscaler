@@ -1,5 +1,8 @@
 package io.github.cloudburst.grayscaler
 
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,6 +16,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -20,6 +24,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -41,14 +46,20 @@ import java.util.Calendar
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ScheduleScreen(onBack: () -> Unit, onAddSchedule: () -> Unit, onEditSchedule: (Schedule) -> Unit) {
+fun ScheduleScreen(
+    onBack: () -> Unit,
+    onAddSchedule: () -> Unit,
+    onImportScheduleSaved: (Schedule) -> Unit,
+    onEditSchedule: (Schedule) -> Unit
+) {
     val context = LocalContext.current
     val store = remember { ScheduleStore(context) }
     var schedules by remember { mutableStateOf<List<Schedule>>(emptyList()) }
     var schedulesLoading by remember { mutableStateOf(true) }
     var pendingDeleteId by remember { mutableStateOf<String?>(null) }
+    var showAddDialog by remember { mutableStateOf(false) }
 
-    LaunchedEffect(store) {
+    suspend fun refreshSchedules() {
         schedulesLoading = true
         val loadedSchedules = withContext(Dispatchers.IO) {
             store.load()
@@ -56,6 +67,34 @@ fun ScheduleScreen(onBack: () -> Unit, onAddSchedule: () -> Unit, onEditSchedule
         }
         schedules = loadedSchedules
         schedulesLoading = false
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            val json = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                ?: error("Unable to open schedule backup")
+            val imported = store.decodeExportedSchedule(json)
+            val conflict = store.conflictsWith(imported)
+            if (conflict != null) {
+                error("Imported schedule conflicts with \"${conflict.label}\"")
+            }
+            store.add(imported)
+            ScheduleManager(context).register(imported)
+            imported
+        }.onSuccess { imported ->
+            schedules = store.schedules.toList()
+            Toast.makeText(context, "Schedule imported", Toast.LENGTH_SHORT).show()
+            onImportScheduleSaved(imported)
+        }.onFailure {
+            Toast.makeText(context, it.message ?: "Schedule import failed", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    LaunchedEffect(store) {
+        refreshSchedules()
     }
 
     Scaffold(
@@ -70,7 +109,7 @@ fun ScheduleScreen(onBack: () -> Unit, onAddSchedule: () -> Unit, onEditSchedule
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = onAddSchedule) {
+            FloatingActionButton(onClick = { showAddDialog = true }) {
                 Icon(Icons.Filled.Add, contentDescription = "Add schedule")
             }
         }
@@ -132,6 +171,40 @@ fun ScheduleScreen(onBack: () -> Unit, onAddSchedule: () -> Unit, onEditSchedule
                 },
                 dismissButton = {
                     TextButton(onClick = { pendingDeleteId = null }) { Text("Cancel") }
+                }
+            )
+        }
+
+        if (showAddDialog) {
+            AlertDialog(
+                onDismissRequest = { showAddDialog = false },
+                title = { Text("New Schedule") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Choose how you want to create the schedule.")
+                        Button(
+                            onClick = {
+                                showAddDialog = false
+                                onAddSchedule()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Create New Schedule")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                showAddDialog = false
+                                importLauncher.launch(arrayOf("application/json", "*/*"))
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Import Schedule Backup")
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { showAddDialog = false }) { Text("Cancel") }
                 }
             )
         }

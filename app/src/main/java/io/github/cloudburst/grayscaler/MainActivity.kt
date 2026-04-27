@@ -172,8 +172,7 @@ class MainActivity : ComponentActivity() {
 
         thread {
             store.preloadApps()
-            val launcherEntries = loadCCLauncherShortcuts()
-            webShortcutStore.mergeLauncherEntries(launcherEntries)
+            webShortcutStore.refreshLauncherEntries()
         }
 
         setContent {
@@ -194,38 +193,6 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         val decision = GrayscaleStateManager.evaluateCurrentApp(this, javaClass.name)
         GrayscaleStateManager.applyToSystem(this, decision)
-    }
-
-    private fun loadCCLauncherShortcuts(): List<WebShortcutEntry> {
-        return try {
-            val uri = android.net.Uri.parse("content://app.cclauncher.shortcuts/pinned")
-            val cursor = contentResolver.query(uri, null, null, null, null)
-                ?: return emptyList()
-            val entries = mutableListOf<WebShortcutEntry>()
-            cursor.use {
-                val labelIdx = it.getColumnIndex("label")
-                val urlIdx = it.getColumnIndex("url")
-                val browserPkgIdx = it.getColumnIndex("browser_package")
-                val shortcutIdIdx = it.getColumnIndex("shortcut_id")
-                if (labelIdx < 0 || urlIdx < 0) return@use
-                while (it.moveToNext()) {
-                    val shortcutId = if (shortcutIdIdx >= 0) it.getString(shortcutIdIdx) else ""
-                    val browserPkg = if (browserPkgIdx >= 0) it.getString(browserPkgIdx) else null
-                    entries.add(
-                        WebShortcutEntry(
-                            id = "cclauncher_${shortcutId}_${browserPkg.orEmpty()}",
-                            label = it.getString(labelIdx),
-                            url = it.getString(urlIdx),
-                            browserPackage = browserPkg,
-                            isManual = false
-                        )
-                    )
-                }
-            }
-            entries
-        } catch (_: Exception) {
-            emptyList()
-        }
     }
 
     private fun hasAllPermissions(): Boolean {
@@ -287,6 +254,10 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
             ScheduleScreen(
                 onBack = { navController.popBackStack() },
                 onAddSchedule = { navController.navigate("add_schedule") },
+                onImportScheduleSaved = { imported ->
+                    navController.currentBackStackEntry?.savedStateHandle?.set("edit_schedule", imported)
+                    navController.navigate("edit_schedule")
+                },
                 onEditSchedule = { schedule ->
                     navController.currentBackStackEntry?.savedStateHandle?.set("edit_schedule", schedule)
                     navController.navigate("edit_schedule")
@@ -298,7 +269,10 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
                 existing = null,
                 onBack = { navController.popBackStack() },
                 onSaved = { navController.popBackStack() },
-                onOpenAppList = null
+                onOpenAppList = { scheduleId -> navController.navigate("schedule_whitelist/$scheduleId") },
+                onOpenPerAppViews = { scheduleId -> navController.navigate("schedule_per_app_views/$scheduleId") },
+                onOpenOverlayIgnore = { scheduleId -> navController.navigate("schedule_overlay_ignore/$scheduleId") },
+                onOpenWebShortcuts = { scheduleId -> navController.navigate("schedule_web_shortcuts/$scheduleId") }
             )
         }
         composable("edit_schedule") {
@@ -308,13 +282,38 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
                 existing = schedule,
                 onBack = { navController.popBackStack() },
                 onSaved = { navController.popBackStack() },
-                onOpenAppList = { scheduleId -> navController.navigate("schedule_whitelist/$scheduleId") }
+                onOpenAppList = { scheduleId -> navController.navigate("schedule_whitelist/$scheduleId") },
+                onOpenPerAppViews = { scheduleId -> navController.navigate("schedule_per_app_views/$scheduleId") },
+                onOpenOverlayIgnore = { scheduleId -> navController.navigate("schedule_overlay_ignore/$scheduleId") },
+                onOpenWebShortcuts = { scheduleId -> navController.navigate("schedule_web_shortcuts/$scheduleId") }
             )
         }
         composable("schedule_whitelist/{scheduleId}") { backStackEntry ->
             val scheduleId = backStackEntry.arguments?.getString("scheduleId") ?: return@composable
             WhitelistScreen(
                 store = store,
+                onBack = { navController.popBackStack() },
+                scheduleId = scheduleId
+            )
+        }
+        composable("schedule_per_app_views/{scheduleId}") { backStackEntry ->
+            val scheduleId = backStackEntry.arguments?.getString("scheduleId") ?: return@composable
+            PerAppViewsSettingsScreen(
+                onBack = { navController.popBackStack() },
+                scheduleId = scheduleId
+            )
+        }
+        composable("schedule_overlay_ignore/{scheduleId}") { backStackEntry ->
+            val scheduleId = backStackEntry.arguments?.getString("scheduleId") ?: return@composable
+            OverlayIgnoreScreen(
+                onBack = { navController.popBackStack() },
+                scheduleId = scheduleId
+            )
+        }
+        composable("schedule_web_shortcuts/{scheduleId}") { backStackEntry ->
+            val scheduleId = backStackEntry.arguments?.getString("scheduleId") ?: return@composable
+            WebShortcutScreen(
+                store = webShortcutStore,
                 onBack = { navController.popBackStack() },
                 scheduleId = scheduleId
             )

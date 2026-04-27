@@ -55,7 +55,7 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
     val scheduleContext: ScheduleContext? = remember(scheduleId) {
         if (scheduleId == null) return@remember null
         val ss = ScheduleStore(context).also { it.load() }
-        val sched = ss.schedules.find { it.id == scheduleId } ?: return@remember null
+        val sched = ss.schedules.find { it.id == scheduleId } ?: DraftScheduleSession.get(scheduleId) ?: return@remember null
         val localStore = AppListStore(context).also { a ->
             a.whitelist = sched.profileMode != "blacklist"
             a.whitelistedApps = sched.profileWhitelist
@@ -69,11 +69,12 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
     val handleBack: () -> Unit = {
         scheduleContext?.let { (ss, sched, localStore) ->
             val updatedMode = if (localStore.whitelist) "whitelist" else "blacklist"
-            ss.update(sched.copy(
+            val updated = sched.copy(
                 profileMode = updatedMode,
                 profileWhitelist = localStore.whitelistedApps,
                 profileBlacklist = localStore.blacklistedApps
-            ))
+            )
+            if (ss.schedules.any { it.id == sched.id }) ss.update(updated) else DraftScheduleSession.put(updated)
         }
         onBack()
     }

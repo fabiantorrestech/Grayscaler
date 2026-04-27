@@ -51,12 +51,45 @@ import java.net.URL
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WebShortcutScreen(store: WebShortcutStore, onBack: () -> Unit) {
-    var entries by remember { mutableStateOf(store.entries) }
+fun WebShortcutScreen(store: WebShortcutStore, onBack: () -> Unit, scheduleId: String? = null) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    data class ScheduleContext(val scheduleStore: ScheduleStore, val schedule: Schedule)
+    val scheduleContext = remember(scheduleId) {
+        if (scheduleId == null) return@remember null
+        val scheduleStore = ScheduleStore(context).also { it.load() }
+        val schedule = scheduleStore.schedules.find { it.id == scheduleId }
+            ?: DraftScheduleSession.get(scheduleId)
+            ?: return@remember null
+        ScheduleContext(scheduleStore, schedule)
+    }
+
+    fun currentSchedule(): Schedule? {
+        val ctx = scheduleContext ?: return null
+        ctx.scheduleStore.load()
+        return ctx.scheduleStore.schedules.find { it.id == ctx.schedule.id }
+            ?: DraftScheduleSession.get(ctx.schedule.id)
+            ?: ctx.schedule
+    }
+
+    fun updateSchedule(transform: (Schedule) -> Schedule) {
+        val ctx = scheduleContext ?: return
+        val latest = currentSchedule() ?: return
+        val updated = transform(latest)
+        if (ctx.scheduleStore.schedules.any { it.id == updated.id }) ctx.scheduleStore.update(updated)
+        else DraftScheduleSession.put(updated)
+    }
+
+    var entries by remember { mutableStateOf(scheduleContext?.schedule?.webShortcutEntries ?: store.entries) }
     var showAddDialog by remember { mutableStateOf(false) }
     val rulesState = remember {
         mutableStateMapOf<String, String>().also { map ->
-            store.entries.forEach { map[it.id] = store.ruleFor(it.id) }
+            if (scheduleContext != null) {
+                scheduleContext.schedule.webShortcutEntries.forEach { entry ->
+                    map[entry.id] = scheduleContext.schedule.webShortcutRules[entry.id] ?: "ignore"
+                }
+            } else {
+                store.entries.forEach { map[it.id] = store.ruleFor(it.id) }
+            }
         }
     }
 
@@ -101,8 +134,15 @@ fun WebShortcutScreen(store: WebShortcutStore, onBack: () -> Unit) {
                             entry = entry,
                             rule = rulesState[entry.id] ?: "ignore",
                             onRuleChange = { mode ->
-                                store.setRule(entry.id, mode)
                                 rulesState[entry.id] = mode
+                                if (scheduleContext != null) {
+                                    updateSchedule { schedule ->
+                                        schedule.copy(webShortcutRules = schedule.webShortcutRules + (entry.id to mode))
+                                    }
+                                } else {
+                                    store.setRule(entry.id, mode)
+                                    store.save()
+                                }
                             },
                             onDelete = null
                         )
@@ -127,13 +167,31 @@ fun WebShortcutScreen(store: WebShortcutStore, onBack: () -> Unit) {
                             entry = entry,
                             rule = rulesState[entry.id] ?: "ignore",
                             onRuleChange = { mode ->
-                                store.setRule(entry.id, mode)
                                 rulesState[entry.id] = mode
+                                if (scheduleContext != null) {
+                                    updateSchedule { schedule ->
+                                        schedule.copy(webShortcutRules = schedule.webShortcutRules + (entry.id to mode))
+                                    }
+                                } else {
+                                    store.setRule(entry.id, mode)
+                                    store.save()
+                                }
                             },
                             onDelete = {
-                                store.removeManualEntry(entry.id)
                                 rulesState.remove(entry.id)
-                                entries = store.entries
+                                if (scheduleContext != null) {
+                                    updateSchedule { schedule ->
+                                        schedule.copy(
+                                            webShortcutEntries = schedule.webShortcutEntries.filter { it.id != entry.id },
+                                            webShortcutRules = schedule.webShortcutRules - entry.id
+                                        )
+                                    }
+                                    entries = entries.filter { it.id != entry.id }
+                                } else {
+                                    store.removeManualEntry(entry.id)
+                                    store.save()
+                                    entries = store.entries
+                                }
                             }
                         )
                     }
@@ -161,9 +219,24 @@ fun WebShortcutScreen(store: WebShortcutStore, onBack: () -> Unit) {
         AddWebShortcutDialog(
             onDismiss = { showAddDialog = false },
             onConfirm = { label, url ->
-                val added = store.addManualEntry(label, url)
+                val added = WebShortcutEntry(
+                    id = "manual_${System.currentTimeMillis()}",
+                    label = label,
+                    url = url,
+                    browserPackage = null,
+                    isManual = true
+                )
                 rulesState[added.id] = "ignore"
-                entries = store.entries
+                if (scheduleContext != null) {
+                    updateSchedule { schedule ->
+                        schedule.copy(webShortcutEntries = schedule.webShortcutEntries + added)
+                    }
+                    entries = entries + added
+                } else {
+                    store.addManualEntry(label, url)
+                    store.save()
+                    entries = store.entries
+                }
                 showAddDialog = false
             }
         )

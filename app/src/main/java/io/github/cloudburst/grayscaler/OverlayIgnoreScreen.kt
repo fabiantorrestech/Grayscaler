@@ -46,9 +46,28 @@ import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun OverlayIgnoreScreen(onBack: () -> Unit) {
+fun OverlayIgnoreScreen(onBack: () -> Unit, scheduleId: String? = null) {
     val context = LocalContext.current
-    val store = remember { OverlayIgnoreStore(context) }
+    val globalStore = remember { OverlayIgnoreStore(context) }
+    data class ScheduleContext(val scheduleStore: ScheduleStore, val schedule: Schedule)
+    val scheduleContext = remember(scheduleId) {
+        if (scheduleId == null) return@remember null
+        val scheduleStore = ScheduleStore(context).also { it.load() }
+        val schedule = scheduleStore.schedules.find { it.id == scheduleId }
+            ?: DraftScheduleSession.get(scheduleId)
+            ?: return@remember null
+        ScheduleContext(scheduleStore, schedule)
+    }
+
+    fun updateSchedule(transform: (Schedule) -> Schedule) {
+        val ctx = scheduleContext ?: return
+        val latest = ctx.scheduleStore.schedules.find { it.id == ctx.schedule.id }
+            ?: DraftScheduleSession.get(ctx.schedule.id)
+            ?: ctx.schedule
+        val updated = transform(latest)
+        if (ctx.scheduleStore.schedules.any { it.id == updated.id }) ctx.scheduleStore.update(updated)
+        else DraftScheduleSession.put(updated)
+    }
 
     var geminiIgnored by remember { mutableStateOf(true) }
     var userPackages by remember { mutableStateOf(emptySet<String>()) }
@@ -56,11 +75,19 @@ fun OverlayIgnoreScreen(onBack: () -> Unit) {
     var loading by remember { mutableStateOf(true) }
     var showAddDialog by remember { mutableStateOf(false) }
 
-    LaunchedEffect(store) {
+    LaunchedEffect(globalStore, scheduleContext) {
         loading = true
         val loadedState = withContext(Dispatchers.IO) {
-            store.load()
-            store.geminiIgnored to store.userPackages.toSet()
+            if (scheduleContext != null) {
+                scheduleContext.scheduleStore.load()
+                val schedule = scheduleContext.scheduleStore.schedules.find { it.id == scheduleContext.schedule.id }
+                    ?: DraftScheduleSession.get(scheduleContext.schedule.id)
+                    ?: scheduleContext.schedule
+                schedule.overlayGeminiIgnored to schedule.overlayUserPackages
+            } else {
+                globalStore.load()
+                globalStore.geminiIgnored to globalStore.userPackages.toSet()
+            }
         }
         geminiIgnored = loadedState.first
         userPackages = loadedState.second
@@ -122,7 +149,11 @@ fun OverlayIgnoreScreen(onBack: () -> Unit) {
                             checked = geminiIgnored,
                             onCheckedChange = {
                                 geminiIgnored = it
-                                store.updateGeminiIgnored(it)
+                                if (scheduleContext != null) {
+                                    updateSchedule { schedule -> schedule.copy(overlayGeminiIgnored = it) }
+                                } else {
+                                    globalStore.updateGeminiIgnored(it)
+                                }
                             }
                         )
                     }
@@ -159,8 +190,15 @@ fun OverlayIgnoreScreen(onBack: () -> Unit) {
                             }
                         }
                         IconButton(onClick = {
-                            store.removePackage(app.packageName)
-                            userPackages = store.userPackages.toSet()
+                            if (scheduleContext != null) {
+                                updateSchedule { schedule ->
+                                    schedule.copy(overlayUserPackages = schedule.overlayUserPackages - app.packageName)
+                                }
+                                userPackages -= app.packageName
+                            } else {
+                                globalStore.removePackage(app.packageName)
+                                userPackages = globalStore.userPackages.toSet()
+                            }
                         }) {
                             Icon(Icons.Filled.Close, contentDescription = "Remove", tint = MaterialTheme.colorScheme.error)
                         }
@@ -177,8 +215,15 @@ fun OverlayIgnoreScreen(onBack: () -> Unit) {
                     if (OverlayIgnoreStore.GEMINI_PACKAGES.contains(pkg)) {
                         // Already covered by the Gemini toggle — inform but don't add to custom list
                     } else {
-                        store.addPackage(pkg)
-                        userPackages = store.userPackages.toSet()
+                        if (scheduleContext != null) {
+                            updateSchedule { schedule ->
+                                schedule.copy(overlayUserPackages = schedule.overlayUserPackages + pkg)
+                            }
+                            userPackages += pkg
+                        } else {
+                            globalStore.addPackage(pkg)
+                            userPackages = globalStore.userPackages.toSet()
+                        }
                     }
                     showAddDialog = false
                 }

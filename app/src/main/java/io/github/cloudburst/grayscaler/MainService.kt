@@ -316,9 +316,15 @@ class MainService : AccessibilityService() {
         val root = rootInActiveWindow ?: return
         val url = findUrlInNodeTree(root) ?: run { root.recycle(); return }
         root.recycle()
-        val webStore = WebShortcutStore(this)
-        webStore.load()
-        when (webStore.shouldGrayScale(url)) {
+        val activeSchedule = GrayscaleStateManager.currentActiveSchedule(this)
+        val decision = if (activeSchedule?.webShortcutProfileEnabled == true) {
+            ScheduleProfiles.shouldGrayScaleForScheduleWebShortcut(activeSchedule, url)
+        } else {
+            val webStore = WebShortcutStore(this)
+            webStore.load()
+            webStore.shouldGrayScale(url)
+        }
+        when (decision) {
             true -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE)
             false -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
             null -> { /* no matching rule — leave current state */ }

@@ -60,18 +60,29 @@ object GrayscaleStateManager {
         allowSelfIgnoreBypass: Boolean,
     ): Decision {
         val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+        val activeSchedule = currentActiveSchedule(context)
 
         // Per-app views auto-disable — overrides all other rules
-        val perAppViews = perAppViewsStore ?: PerAppViewsStore(context).also { perAppViewsStore = it }
-        if (perAppViews.masterEnabled && perAppViews.matches(pkg, className)) {
+        val perAppViewMatched = if (activeSchedule?.perAppViewsProfileEnabled == true) {
+            ScheduleProfiles.matchesPerAppView(activeSchedule, pkg, className)
+        } else {
+            val perAppViews = perAppViewsStore ?: PerAppViewsStore(context).also { perAppViewsStore = it }
+            perAppViews.masterEnabled && perAppViews.matches(pkg, className)
+        }
+        if (perAppViewMatched) {
             rememberMeaningfulForeground(context, pkg, className)
             return Decision.DISABLE
         }
 
         // User-managed ignore list (includes system ignores + Gemini group + user additions)
-        val ignoreStore = overlayIgnoreStore ?: OverlayIgnoreStore(context).also { it.load(); overlayIgnoreStore = it }
+        val effectiveIgnoreList = if (activeSchedule?.overlayProfileEnabled == true) {
+            ScheduleProfiles.effectiveOverlayIgnoreList(activeSchedule)
+        } else {
+            val ignoreStore = overlayIgnoreStore ?: OverlayIgnoreStore(context).also { it.load(); overlayIgnoreStore = it }
+            ignoreStore.effectiveIgnoreList()
+        }
         val bypassIgnore = allowSelfIgnoreBypass && pkg == context.packageName
-        if (!bypassIgnore && ignoreStore.effectiveIgnoreList().contains(pkg)) return Decision.SKIP
+        if (!bypassIgnore && effectiveIgnoreList.contains(pkg)) return Decision.SKIP
 
         // Skip keyboard/IME packages
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
@@ -86,15 +97,13 @@ object GrayscaleStateManager {
         if (!prefs.getBoolean("grayscaler_enabled", true)) return Decision.DISABLE
 
         // Active schedule — apply the schedule's profile
-        val schedStore = scheduleStore ?: ScheduleStore(context).also { it.load(); scheduleStore = it }
-        if (schedStore.scheduleOverrideActive) {
-            val active = schedStore.schedules.find { it.id == schedStore.activeScheduleId }
+        if (activeSchedule != null) {
             return when {
-                active == null || active.profileMode == "global" -> evaluateAppList(pkg, context)
-                active.profileMode == "whitelist" ->
-                    if (pkg !in active.profileWhitelist) Decision.ENABLE else Decision.DISABLE
-                active.profileMode == "blacklist" ->
-                    if (pkg in active.profileBlacklist) Decision.ENABLE else Decision.DISABLE
+                !activeSchedule.appListProfileEnabled -> evaluateAppList(pkg, context)
+                activeSchedule.effectiveAppListMode() == "whitelist" ->
+                    if (pkg !in activeSchedule.profileWhitelist) Decision.ENABLE else Decision.DISABLE
+                activeSchedule.effectiveAppListMode() == "blacklist" ->
+                    if (pkg in activeSchedule.profileBlacklist) Decision.ENABLE else Decision.DISABLE
                 else -> evaluateAppList(pkg, context)
             }
         }
@@ -137,6 +146,12 @@ object GrayscaleStateManager {
     private fun evaluateAppList(pkg: String, context: Context): Decision {
         val store = appListStore ?: AppListStore(context).also { it.load(); appListStore = it }
         return if (store.shouldGrayScale(pkg)) Decision.ENABLE else Decision.DISABLE
+    }
+
+    fun currentActiveSchedule(context: Context): Schedule? {
+        val schedStore = scheduleStore ?: ScheduleStore(context).also { it.load(); scheduleStore = it }
+        if (!schedStore.scheduleOverrideActive) return null
+        return schedStore.schedules.find { it.id == schedStore.activeScheduleId && it.enabled }
     }
 
     private fun rememberMeaningfulForeground(context: Context, pkg: String, className: String) {

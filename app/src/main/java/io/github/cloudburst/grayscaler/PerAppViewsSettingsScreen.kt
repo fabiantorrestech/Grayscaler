@@ -45,26 +45,63 @@ import androidx.lifecycle.LifecycleEventObserver
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PerAppViewsSettingsScreen(onBack: () -> Unit) {
+fun PerAppViewsSettingsScreen(onBack: () -> Unit, scheduleId: String? = null) {
     val context = LocalContext.current
     val store = remember { PerAppViewsStore(context) }
     val prefs = remember { context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE) }
+    data class ScheduleContext(val scheduleStore: ScheduleStore, val schedule: Schedule)
+    val scheduleContext = remember(scheduleId) {
+        if (scheduleId == null) return@remember null
+        val scheduleStore = ScheduleStore(context).also { it.load() }
+        val schedule = scheduleStore.schedules.find { it.id == scheduleId }
+            ?: DraftScheduleSession.get(scheduleId)
+            ?: return@remember null
+        ScheduleContext(scheduleStore, schedule)
+    }
 
-    var masterEnabled by remember { mutableStateOf(store.masterEnabled) }
+    fun currentSchedule(): Schedule? {
+        val ctx = scheduleContext ?: return null
+        ctx.scheduleStore.load()
+        return ctx.scheduleStore.schedules.find { it.id == ctx.schedule.id }
+            ?: DraftScheduleSession.get(ctx.schedule.id)
+            ?: ctx.schedule
+    }
+
+    fun updateSchedule(transform: (Schedule) -> Schedule) {
+        val ctx = scheduleContext ?: return
+        val latest = currentSchedule() ?: return
+        val updated = transform(latest)
+        if (ctx.scheduleStore.schedules.any { it.id == updated.id }) ctx.scheduleStore.update(updated)
+        else DraftScheduleSession.put(updated)
+    }
+
+    var masterEnabled by remember {
+        mutableStateOf(scheduleContext?.schedule?.perAppViewsProfileEnabled ?: store.masterEnabled)
+    }
     var diagnosticEnabled by remember { mutableStateOf(store.diagnosticEnabled) }
 
     val builtInEnabled = remember {
         PerAppViewsStore.BUILT_IN_ENTRIES.map { entry ->
-            mutableStateOf(store.isBuiltInEnabled(entry.id))
+            mutableStateOf(
+                scheduleContext?.schedule?.perAppViewsBuiltInEnabled?.get(entry.id) ?: store.isBuiltInEnabled(entry.id)
+            )
         }
     }
     val builtInPatterns = remember {
         PerAppViewsStore.BUILT_IN_ENTRIES.map { entry ->
-            mutableStateOf(store.getBuiltInPattern(entry))
+            mutableStateOf(
+                scheduleContext?.schedule?.perAppViewsBuiltInPatterns?.get(entry.id) ?: store.getBuiltInPattern(entry)
+            )
         }
     }
 
-    var customEntries by remember { mutableStateOf(store.getCustomEntries()) }
+    var customEntries by remember {
+        mutableStateOf(
+            scheduleContext?.schedule?.perAppViewsCustomEntries?.map {
+                PerAppViewsStore.CustomEntry(it.packageName, it.classPattern, it.enabled)
+            } ?: store.getCustomEntries()
+        )
+    }
     var lastWindowClass by remember { mutableStateOf(prefs.getString("last_window_class", null)) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -148,21 +185,23 @@ fun PerAppViewsSettingsScreen(onBack: () -> Unit) {
         }
     ) { innerPadding ->
         LazyColumn(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "Auto-disable per-app views whitelisting",
-                        style = MaterialTheme.typography.bodyLarge
-                    )
-                    Switch(checked = masterEnabled, onCheckedChange = {
-                        masterEnabled = it; store.setMasterEnabled(it)
-                    })
+            if (scheduleContext == null) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Auto-disable per-app views whitelisting",
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        Switch(checked = masterEnabled, onCheckedChange = {
+                            masterEnabled = it; store.setMasterEnabled(it)
+                        })
+                    }
+                    HorizontalDivider()
                 }
-                HorizontalDivider()
             }
             item {
                 Row(
@@ -256,7 +295,15 @@ fun PerAppViewsSettingsScreen(onBack: () -> Unit) {
                                 enabled = hasPattern,
                                 onCheckedChange = {
                                     enabled.value = it
-                                    store.setBuiltInEnabled(entry.id, it)
+                                    if (scheduleContext != null) {
+                                        updateSchedule { schedule ->
+                                            schedule.copy(
+                                                perAppViewsBuiltInEnabled = schedule.perAppViewsBuiltInEnabled + (entry.id to it)
+                                            )
+                                        }
+                                    } else {
+                                        store.setBuiltInEnabled(entry.id, it)
+                                    }
                                 }
                             )
                         }
@@ -318,7 +365,17 @@ fun PerAppViewsSettingsScreen(onBack: () -> Unit) {
                                     val updated = customEntries.toMutableList()
                                         .also { it[index] = entry.copy(enabled = v) }
                                     customEntries = updated
-                                    store.saveCustomEntries(updated)
+                                    if (scheduleContext != null) {
+                                        updateSchedule { schedule ->
+                                            schedule.copy(
+                                                perAppViewsCustomEntries = updated.map {
+                                                    SchedulePerAppViewEntry(it.packageName, it.classPattern, it.enabled)
+                                                }
+                                            )
+                                        }
+                                    } else {
+                                        store.saveCustomEntries(updated)
+                                    }
                                 }
                             )
                             IconButton(onClick = { editingCustomIndex = index }) {
@@ -328,7 +385,17 @@ fun PerAppViewsSettingsScreen(onBack: () -> Unit) {
                                 val updated = customEntries.toMutableList()
                                     .also { it.removeAt(index) }
                                 customEntries = updated
-                                store.saveCustomEntries(updated)
+                                if (scheduleContext != null) {
+                                    updateSchedule { schedule ->
+                                        schedule.copy(
+                                            perAppViewsCustomEntries = updated.map {
+                                                SchedulePerAppViewEntry(it.packageName, it.classPattern, it.enabled)
+                                            }
+                                        )
+                                    }
+                                } else {
+                                    store.saveCustomEntries(updated)
+                                }
                             }) {
                                 Icon(Icons.Filled.Delete, contentDescription = "Remove")
                             }
@@ -382,7 +449,17 @@ fun PerAppViewsSettingsScreen(onBack: () -> Unit) {
                             )
                         }
                         customEntries = updated
-                        store.saveCustomEntries(updated)
+                        if (scheduleContext != null) {
+                            updateSchedule { schedule ->
+                                schedule.copy(
+                                    perAppViewsCustomEntries = updated.map {
+                                        SchedulePerAppViewEntry(it.packageName, it.classPattern, it.enabled)
+                                    }
+                                )
+                            }
+                        } else {
+                            store.saveCustomEntries(updated)
+                        }
                         editingCustomIndex = null
                     },
                     enabled = editCustomPkg.isNotBlank() && editCustomPattern.isNotBlank()
@@ -427,7 +504,15 @@ fun PerAppViewsSettingsScreen(onBack: () -> Unit) {
                 TextButton(onClick = {
                     val trimmed = editPatternInput.trim()
                     builtInPatterns[index].value = trimmed
-                    store.setBuiltInPattern(entry.id, trimmed)
+                    if (scheduleContext != null) {
+                        updateSchedule { schedule ->
+                            schedule.copy(
+                                perAppViewsBuiltInPatterns = schedule.perAppViewsBuiltInPatterns + (entry.id to trimmed)
+                            )
+                        }
+                    } else {
+                        store.setBuiltInPattern(entry.id, trimmed)
+                    }
                     editingBuiltInIndex = null
                 }) { Text("Save") }
             },
@@ -471,7 +556,17 @@ fun PerAppViewsSettingsScreen(onBack: () -> Unit) {
                         val e = PerAppViewsStore.CustomEntry(newPkg.trim(), newPattern.trim(), true)
                         val updated = customEntries + e
                         customEntries = updated
-                        store.saveCustomEntries(updated)
+                        if (scheduleContext != null) {
+                            updateSchedule { schedule ->
+                                schedule.copy(
+                                    perAppViewsCustomEntries = updated.map {
+                                        SchedulePerAppViewEntry(it.packageName, it.classPattern, it.enabled)
+                                    }
+                                )
+                            }
+                        } else {
+                            store.saveCustomEntries(updated)
+                        }
                         showAddDialog = false
                     },
                     enabled = newPkg.isNotBlank() && newPattern.isNotBlank()

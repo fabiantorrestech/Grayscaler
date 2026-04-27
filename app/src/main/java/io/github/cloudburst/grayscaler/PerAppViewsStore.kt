@@ -42,17 +42,13 @@ class PerAppViewsStore(private val context: Context) {
     }
 
     fun matches(pkg: String, className: String): Boolean {
-        for (entry in BUILT_IN_ENTRIES) {
-            if (!isBuiltInEnabled(entry.id)) continue
-            val pattern = getBuiltInPattern(entry)
-            if (pattern.isBlank()) continue
-            if (pkg == entry.packageName && className.contains(pattern, ignoreCase = true)) return true
-        }
-        for (entry in getCustomEntries()) {
-            if (!entry.enabled || entry.classPattern.isBlank()) continue
-            if (pkg == entry.packageName && className.contains(entry.classPattern, ignoreCase = true)) return true
-        }
-        return false
+        return matchesProfile(
+            pkg = pkg,
+            className = className,
+            builtInEnabled = BUILT_IN_ENTRIES.associate { it.id to isBuiltInEnabled(it.id) },
+            builtInPatterns = BUILT_IN_ENTRIES.associate { it.id to getBuiltInPattern(it) },
+            customEntries = getCustomEntries()
+        )
     }
 
     data class BuiltInEntry(
@@ -70,6 +66,26 @@ class PerAppViewsStore(private val context: Context) {
     )
 
     companion object {
+        fun matchesProfile(
+            pkg: String,
+            className: String,
+            builtInEnabled: Map<String, Boolean>,
+            builtInPatterns: Map<String, String>,
+            customEntries: List<CustomEntry>
+        ): Boolean {
+            for (entry in BUILT_IN_ENTRIES) {
+                if (builtInEnabled[entry.id] != true) continue
+                val pattern = builtInPatterns[entry.id].orEmpty()
+                if (pattern.isBlank()) continue
+                if (pkg == entry.packageName && className.contains(pattern, ignoreCase = true)) return true
+            }
+            for (entry in customEntries) {
+                if (!entry.enabled || entry.classPattern.isBlank()) continue
+                if (pkg == entry.packageName && className.contains(entry.classPattern, ignoreCase = true)) return true
+            }
+            return false
+        }
+
         val BUILT_IN_ENTRIES = listOf(
             BuiltInEntry("whatsapp", "WhatsApp", "com.whatsapp", "MediaView"),
             BuiltInEntry("googlemessages", "Google Messages", "com.google.android.apps.messaging", "mpv"),

@@ -64,6 +64,10 @@ class WebShortcutStore(val context: Context) {
         entries = merged
     }
 
+    fun refreshLauncherEntries() {
+        mergeLauncherEntries(loadCCLauncherShortcuts(context))
+    }
+
     fun setRule(id: String, mode: String) {
         rules[id] = mode
     }
@@ -101,6 +105,38 @@ class WebShortcutStore(val context: Context) {
     }
 
     companion object {
+        fun loadCCLauncherShortcuts(context: Context): List<WebShortcutEntry> {
+            return try {
+                val uri = android.net.Uri.parse("content://app.cclauncher.shortcuts/pinned")
+                val cursor = context.contentResolver.query(uri, null, null, null, null)
+                    ?: return emptyList()
+                val loaded = mutableListOf<WebShortcutEntry>()
+                cursor.use {
+                    val labelIdx = it.getColumnIndex("label")
+                    val urlIdx = it.getColumnIndex("url")
+                    val browserPkgIdx = it.getColumnIndex("browser_package")
+                    val shortcutIdIdx = it.getColumnIndex("shortcut_id")
+                    if (labelIdx < 0 || urlIdx < 0) return@use
+                    while (it.moveToNext()) {
+                        val shortcutId = if (shortcutIdIdx >= 0) it.getString(shortcutIdIdx) else ""
+                        val browserPkg = if (browserPkgIdx >= 0) it.getString(browserPkgIdx) else null
+                        loaded.add(
+                            WebShortcutEntry(
+                                id = "cclauncher_${shortcutId}_${browserPkg.orEmpty()}",
+                                label = it.getString(labelIdx),
+                                url = it.getString(urlIdx),
+                                browserPackage = browserPkg,
+                                isManual = false
+                            )
+                        )
+                    }
+                }
+                loaded
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+
         fun extractOrigin(url: String): String? {
             return try {
                 val uri = Uri.parse(
