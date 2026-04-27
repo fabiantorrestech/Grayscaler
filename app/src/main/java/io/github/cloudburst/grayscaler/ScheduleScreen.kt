@@ -83,6 +83,8 @@ fun ScheduleScreen(
             }
             store.add(imported)
             ScheduleManager(context).register(imported)
+            store.syncRuntimeStateNow()
+            BedtimeManager(context).resync()
             imported
         }.onSuccess { imported ->
             schedules = store.schedules.toList()
@@ -146,6 +148,8 @@ fun ScheduleScreen(
                                 cancel(schedule.id)
                                 if (enabled) register(updated)
                             }
+                            store.syncRuntimeStateNow()
+                            BedtimeManager(context).resync()
                             schedules = store.schedules.toList()
                         },
                         onDelete = { pendingDeleteId = schedule.id },
@@ -165,6 +169,8 @@ fun ScheduleScreen(
                     TextButton(onClick = {
                         store.remove(id)
                         ScheduleManager(context).cancel(id)
+                        store.syncRuntimeStateNow()
+                        BedtimeManager(context).resync()
                         schedules = store.schedules.toList()
                         pendingDeleteId = null
                     }) { Text("Delete") }
@@ -237,16 +243,21 @@ private fun ScheduleCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Text(
-                    when (schedule.profileMode) {
-                        "whitelist" -> "Whitelist · ${schedule.profileWhitelist.size} apps"
-                        "blacklist" -> "Blacklist · ${schedule.profileBlacklist.size} apps"
-                        else -> "Global List"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+                    Text(
+                        when (schedule.profileMode) {
+                            "whitelist" -> "Whitelist · ${schedule.profileWhitelist.size} apps"
+                            "blacklist" -> "Blacklist · ${schedule.profileBlacklist.size} apps"
+                            else -> "Global List"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        if (schedule.allowBedtimeOverride) "Bedtime override allowed" else "Blocks Bedtime mode",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             Switch(checked = schedule.enabled, onCheckedChange = onToggle)
             IconButton(onClick = onDelete) {
                 Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)

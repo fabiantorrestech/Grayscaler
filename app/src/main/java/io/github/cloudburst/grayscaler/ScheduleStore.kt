@@ -86,6 +86,21 @@ class ScheduleStore(private val context: Context) {
         }
     }
 
+    fun syncRuntimeStateNow(preferredScheduleId: String? = null): Schedule? {
+        val activeSchedule = when {
+            preferredScheduleId != null -> schedules.find { it.id == preferredScheduleId && it.enabled }?.takeIf { schedule ->
+                val cal = java.util.Calendar.getInstance()
+                val day = cal.get(java.util.Calendar.DAY_OF_WEEK)
+                val minutes = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
+                schedule.activeAt(day, minutes)
+            } ?: findActiveScheduleNow()
+            else -> findActiveScheduleNow()
+        }
+        scheduleOverrideActive = activeSchedule != null
+        activeScheduleId = activeSchedule?.id
+        return activeSchedule
+    }
+
     fun exportScheduleJson(schedule: Schedule): JSONObject {
         return JSONObject().apply {
             put("version", EXPORT_VERSION)
@@ -175,6 +190,7 @@ class ScheduleStore(private val context: Context) {
                 }
             })
             put("webShortcutRules", JSONObject(schedule.webShortcutRules))
+            put("allowBedtimeOverride", schedule.allowBedtimeOverride)
         }
     }
 
@@ -235,7 +251,8 @@ class ScheduleStore(private val context: Context) {
                         }
                     }
                     ?: emptyList(),
-                webShortcutRules = jsonObjectStrings(obj.optJSONObject("webShortcutRules"))
+                webShortcutRules = jsonObjectStrings(obj.optJSONObject("webShortcutRules")),
+                allowBedtimeOverride = obj.optBoolean("allowBedtimeOverride", true)
             )
         } catch (_: Exception) {
             null
@@ -256,7 +273,8 @@ class ScheduleStore(private val context: Context) {
                 enabled = p[7] == "1",
                 profileMode = if (p.size > 8) p[8] else "global",
                 profileWhitelist = if (p.size > 9 && p[9].isNotBlank()) p[9].split(",").toSet() else emptySet(),
-                profileBlacklist = if (p.size > 10 && p[10].isNotBlank()) p[10].split(",").toSet() else emptySet()
+                profileBlacklist = if (p.size > 10 && p[10].isNotBlank()) p[10].split(",").toSet() else emptySet(),
+                allowBedtimeOverride = true
             )
         } catch (_: Exception) {
             null

@@ -313,6 +313,22 @@ class MainService : AccessibilityService() {
     }
 
     private fun applyWebShortcutRule(browserPkg: String) {
+        val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+        if (prefs.getLong("pause_until", 0L) > System.currentTimeMillis()) {
+            GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
+            return
+        }
+        if (!prefs.getBoolean("grayscaler_enabled", true)) {
+            GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
+            return
+        }
+        val bedtimeStore = BedtimeStore(this)
+        bedtimeStore.syncRuntimeState()
+        if (bedtimeStore.bedtimeOverrideActive) {
+            GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE)
+            return
+        }
+
         val root = rootInActiveWindow ?: return
         val url = findUrlInNodeTree(root) ?: run { root.recycle(); return }
         root.recycle()

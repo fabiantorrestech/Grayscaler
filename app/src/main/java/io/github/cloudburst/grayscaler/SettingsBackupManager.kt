@@ -20,6 +20,8 @@ object SettingsBackupManager {
         "last_window_class",
         "last_meaningful_foreground_class",
         "last_meaningful_foreground_pkg",
+        BedtimeStore.KEY_BEDTIME_CHARGE_LATCH_ACTIVE,
+        BedtimeStore.KEY_BEDTIME_OVERRIDE_ACTIVE,
         "notif_permission_prompted",
         "pause_until",
         "schedule_override_active",
@@ -73,6 +75,7 @@ object SettingsBackupManager {
 
         val oldSchedules = ScheduleStore(context).apply { load() }.schedules.toList()
         ScheduleManager(context).cancelAll(oldSchedules)
+        BedtimeManager(context).cancelAll()
         clearRuntimePause(context)
 
         restorePrefs(context, backup.getJSONObject("prefs"))
@@ -80,8 +83,12 @@ object SettingsBackupManager {
         restoreFonts(context, backup.optJSONArray("fonts"))
 
         val scheduleStore = ScheduleStore(context).apply { load() }
-        syncActiveScheduleNow(scheduleStore)
+        scheduleStore.syncRuntimeStateNow()
         ScheduleManager(context).registerAll(scheduleStore.schedules)
+        BedtimeManager(context).apply {
+            registerAll()
+            resync()
+        }
         GrayscaleStateManager.invalidate(context)
     }
 
@@ -228,12 +235,6 @@ object SettingsBackupManager {
         ) ?: return
         alarmManager.cancel(pendingIntent)
         pendingIntent.cancel()
-    }
-
-    private fun syncActiveScheduleNow(store: ScheduleStore) {
-        val activeSchedule = store.findActiveScheduleNow()
-        store.scheduleOverrideActive = activeSchedule != null
-        store.activeScheduleId = activeSchedule?.id
     }
 
     private fun encodePrefValue(value: Any?): JSONObject {

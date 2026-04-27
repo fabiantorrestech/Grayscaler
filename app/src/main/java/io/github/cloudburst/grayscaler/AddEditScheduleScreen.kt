@@ -93,6 +93,7 @@ fun AddEditScheduleScreen(
     var webShortcutProfileEnabled by remember { mutableStateOf(existing?.webShortcutProfileEnabled ?: false) }
     var webShortcutEntries by remember { mutableStateOf(existing?.webShortcutEntries ?: emptyList()) }
     var webShortcutRules by remember { mutableStateOf(existing?.webShortcutRules ?: emptyMap()) }
+    var allowBedtimeOverride by remember { mutableStateOf(existing?.allowBedtimeOverride ?: true) }
 
     val startState = rememberTimePickerState(
         initialHour = existing?.startHour ?: 8,
@@ -127,7 +128,8 @@ fun AddEditScheduleScreen(
         overlayUserPackages = overlayUserPackages,
         webShortcutProfileEnabled = webShortcutProfileEnabled,
         webShortcutEntries = webShortcutEntries,
-        webShortcutRules = webShortcutRules
+        webShortcutRules = webShortcutRules,
+        allowBedtimeOverride = allowBedtimeOverride
     )
 
     fun persistIfEditing() {
@@ -154,6 +156,7 @@ fun AddEditScheduleScreen(
         webShortcutProfileEnabled = reloaded.webShortcutProfileEnabled
         webShortcutEntries = reloaded.webShortcutEntries
         webShortcutRules = reloaded.webShortcutRules
+        allowBedtimeOverride = reloaded.allowBedtimeOverride
     }
 
     if (existing != null) {
@@ -187,7 +190,8 @@ fun AddEditScheduleScreen(
         overlayUserPackages,
         webShortcutProfileEnabled,
         webShortcutEntries,
-        webShortcutRules
+        webShortcutRules,
+        allowBedtimeOverride
     ) {
         if (isDraft) DraftScheduleSession.put(scheduleFromState())
     }
@@ -517,6 +521,15 @@ fun AddEditScheduleScreen(
 
             HorizontalDivider()
 
+            Text("Bedtime Mode", style = MaterialTheme.typography.labelLarge)
+            ToggleRow("Allow Bedtime mode to override this schedule", allowBedtimeOverride) {
+                allowBedtimeOverride = it
+                persistIfEditing()
+                BedtimeManager(context).resync()
+            }
+
+            HorizontalDivider()
+
             Text("Backup", style = MaterialTheme.typography.labelLarge)
             OutlinedButton(
                 onClick = {
@@ -555,11 +568,13 @@ fun AddEditScheduleScreen(
                         return@Button
                     }
                     if (existing != null) store.update(candidate) else store.add(candidate)
+                    store.syncRuntimeStateNow()
                     DraftScheduleSession.remove(candidate.id)
                     ScheduleManager(context).apply {
                         cancel(candidate.id)
                         register(candidate)
                     }
+                    BedtimeManager(context).resync()
                     onSaved()
                 },
                 modifier = Modifier.fillMaxWidth()

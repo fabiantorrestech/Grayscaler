@@ -35,7 +35,8 @@ data class Schedule(
     val overlayUserPackages: Set<String> = emptySet(),
     val webShortcutProfileEnabled: Boolean = false,
     val webShortcutEntries: List<WebShortcutEntry> = emptyList(),
-    val webShortcutRules: Map<String, String> = emptyMap()
+    val webShortcutRules: Map<String, String> = emptyMap(),
+    val allowBedtimeOverride: Boolean = true
 ) : Parcelable {
     fun startMinutes() = startHour * 60 + startMinute
     fun endMinutes() = endHour * 60 + endMinute

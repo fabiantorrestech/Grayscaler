@@ -39,6 +39,13 @@ object GrayscaleStateManager {
             applyToSystem(context, Decision.DISABLE)
             return
         }
+        if (BedtimeStore(context).syncRuntimeState()) {
+            // syncRuntimeState updates persisted runtime flags; continue with evaluation below.
+        }
+        if (BedtimeStore(context).bedtimeOverrideActive) {
+            applyToSystem(context, Decision.ENABLE)
+            return
+        }
 
         val pkg = lastMeaningfulPkg ?: prefs.getString(PREF_LAST_MEANINGFUL_PKG, null) ?: return
         val cls = lastMeaningfulClassName.ifEmpty { prefs.getString(PREF_LAST_MEANINGFUL_CLASS, "") ?: "" }
@@ -96,6 +103,11 @@ object GrayscaleStateManager {
         // Global switch off — grayscale off
         if (!prefs.getBoolean("grayscaler_enabled", true)) return Decision.DISABLE
 
+        // Bedtime mode — force grayscale regardless of per-app rules
+        val bedtimeStore = BedtimeStore(context)
+        bedtimeStore.syncRuntimeState()
+        if (bedtimeStore.bedtimeOverrideActive) return Decision.ENABLE
+
         // Active schedule — apply the schedule's profile
         if (activeSchedule != null) {
             return when {
@@ -132,6 +144,13 @@ object GrayscaleStateManager {
 
         if (!prefs.getBoolean("grayscaler_enabled", true)) {
             applyToSystem(context, Decision.DISABLE)
+            return true
+        }
+
+        val bedtimeStore = BedtimeStore(context)
+        bedtimeStore.syncRuntimeState()
+        if (bedtimeStore.bedtimeOverrideActive) {
+            applyToSystem(context, Decision.ENABLE)
             return true
         }
 

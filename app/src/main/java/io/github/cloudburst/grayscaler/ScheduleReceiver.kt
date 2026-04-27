@@ -19,8 +19,12 @@ class ScheduleReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED -> onBoot(context)
+            Intent.ACTION_POWER_CONNECTED -> onPowerChanged(context)
+            Intent.ACTION_POWER_DISCONNECTED -> onPowerChanged(context)
             ACTION_SCHEDULE_START -> onScheduleStart(context, intent)
             ACTION_SCHEDULE_END -> onScheduleEnd(context, intent)
+            ACTION_BEDTIME_START -> onBedtimeBoundary(context)
+            ACTION_BEDTIME_END -> onBedtimeBoundary(context)
             ACTION_SET_ENABLED -> onSetEnabled(context, intent)
             ACTION_PAUSE_GRAYSCALER -> onPauseGrayscaler(context)
             ACTION_APPLY_PAUSE -> onApplyPause(context, intent)
@@ -32,10 +36,18 @@ class ScheduleReceiver : BroadcastReceiver() {
     private fun onBoot(context: Context) {
         val store = ScheduleStore(context)
         store.load()
-        val manager = ScheduleManager(context)
-        manager.registerAll(store.schedules)
-        syncActiveScheduleNow(store)
+        ScheduleManager(context).registerAll(store.schedules)
+        store.syncRuntimeStateNow()
+        BedtimeManager(context).apply {
+            cancelAll()
+            registerAll()
+            resync()
+        }
         GrayscaleStateManager.invalidate(context)
+    }
+
+    private fun onPowerChanged(context: Context) {
+        BedtimeManager(context).resync()
     }
 
     private fun onScheduleStart(context: Context, intent: Intent) {
@@ -45,7 +57,8 @@ class ScheduleReceiver : BroadcastReceiver() {
         val schedule = store.schedules.find { it.id == scheduleId } ?: return
         if (!schedule.enabled) return
 
-        syncActiveScheduleNow(store, scheduleId)
+        store.syncRuntimeStateNow(scheduleId)
+        BedtimeManager(context).resync()
         GrayscaleStateManager.invalidate(context)
 
         // Re-register next week's alarm for this day
@@ -58,24 +71,18 @@ class ScheduleReceiver : BroadcastReceiver() {
         store.load()
         val schedule = store.schedules.find { it.id == scheduleId } ?: return
 
-        syncActiveScheduleNow(store)
+        store.syncRuntimeStateNow()
+        BedtimeManager(context).resync()
         GrayscaleStateManager.invalidate(context)
 
         ScheduleManager(context).register(schedule)
     }
 
-    private fun syncActiveScheduleNow(store: ScheduleStore, preferredScheduleId: String? = null) {
-        val activeSchedule = when {
-            preferredScheduleId != null -> store.schedules.find { it.id == preferredScheduleId && it.enabled }?.takeIf {
-                val cal = java.util.Calendar.getInstance()
-                val day = cal.get(java.util.Calendar.DAY_OF_WEEK)
-                val minutes = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
-                it.activeAt(day, minutes)
-            } ?: store.findActiveScheduleNow()
-            else -> store.findActiveScheduleNow()
-        }
-        store.scheduleOverrideActive = activeSchedule != null
-        store.activeScheduleId = activeSchedule?.id
+    private fun onBedtimeBoundary(context: Context) {
+        val bedtimeManager = BedtimeManager(context)
+        bedtimeManager.cancelAll()
+        bedtimeManager.registerAll()
+        bedtimeManager.resync()
     }
 
     private fun onSetEnabled(context: Context, intent: Intent) {
@@ -273,6 +280,8 @@ class ScheduleReceiver : BroadcastReceiver() {
     companion object {
         const val ACTION_SCHEDULE_START = "io.github.cloudburst.grayscaler.ACTION_SCHEDULE_START"
         const val ACTION_SCHEDULE_END = "io.github.cloudburst.grayscaler.ACTION_SCHEDULE_END"
+        const val ACTION_BEDTIME_START = "io.github.cloudburst.grayscaler.ACTION_BEDTIME_START"
+        const val ACTION_BEDTIME_END = "io.github.cloudburst.grayscaler.ACTION_BEDTIME_END"
         const val ACTION_SET_ENABLED = "io.github.cloudburst.grayscaler.ACTION_SET_ENABLED"
         const val ACTION_PAUSE_GRAYSCALER = "io.github.cloudburst.grayscaler.ACTION_PAUSE_GRAYSCALER"
         const val ACTION_APPLY_PAUSE = "io.github.cloudburst.grayscaler.ACTION_APPLY_PAUSE"

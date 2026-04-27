@@ -32,6 +32,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
@@ -239,6 +240,7 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
             MainScreen(
                 store = store,
                 onOpenSchedules = { navController.navigate("schedules") },
+                onOpenBedtime = { navController.navigate("bedtime") },
                 onOpenOverlayIgnore = { navController.navigate("overlay_ignore") },
                 onOpenPermissions = { navController.navigate("permissions") },
                 onOpenAppearance = { navController.navigate("appearance") },
@@ -263,6 +265,9 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
                     navController.navigate("edit_schedule")
                 }
             )
+        }
+        composable("bedtime") {
+            BedtimeModeScreen(onBack = { navController.popBackStack() })
         }
         composable("add_schedule") {
             AddEditScheduleScreen(
@@ -356,6 +361,7 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
 private fun MainScreen(
     store: AppListStore,
     onOpenSchedules: () -> Unit,
+    onOpenBedtime: () -> Unit,
     onOpenOverlayIgnore: () -> Unit,
     onOpenPermissions: () -> Unit,
     onOpenAppearance: () -> Unit,
@@ -471,6 +477,9 @@ private fun MainScreen(
                         }
                         IconButton(onClick = onOpenSchedules) {
                             Icon(Icons.Filled.DateRange, contentDescription = "Schedules")
+                        }
+                        IconButton(onClick = onOpenBedtime) {
+                            Icon(Icons.Filled.Bedtime, contentDescription = "Bedtime mode")
                         }
                         IconButton(onClick = onOpenAppearance) {
                             Icon(Icons.Filled.Palette, contentDescription = "Appearance")

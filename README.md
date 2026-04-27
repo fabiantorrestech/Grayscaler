@@ -24,7 +24,7 @@ You need some granular control over things like app-overlays, keyboards, notific
 
 I mostly created this to adhere to my needs, but if this is useful to others, I would love to give back to the community!
 
-The fork takes the original concept and adds a full scheduling system, automation support, per-activity class matching, URL-based rules for browsers, a pause overlay, appearance customization, backup/restore, and more.
+The fork takes the original concept and adds a full scheduling system, a dedicated Bedtime Mode, automation support, per-activity class matching, URL-based rules for browsers, a pause overlay, appearance customization, backup/restore, and more.
 
 ---
 
@@ -40,6 +40,14 @@ The following are all additions on top of the original Grayscaler:
 - Two notification styles: live countdown timer (last 5 minutes only) or static "resumes at X:XX" text.
 - Grayscale resumes automatically when the pause expires
 
+### Bedtime Mode
+- Dedicated Bedtime Mode screen from the main app bar
+- Select the days and bedtime window when Bedtime Mode applies
+- Optionally require charging before Bedtime Mode activates
+- Optionally keep Bedtime Mode active after unplugging until bedtime ends
+- Bedtime Mode takes priority over schedules and global app-list behavior
+- Each schedule can allow or block Bedtime Mode from overriding it
+
 ### Schedules
 - Create time-based schedules that enable grayscale on specific days and time windows
 - Each schedule can optionally override the global rule sets with its own schedule-specific:
@@ -50,6 +58,7 @@ The following are all additions on top of the original Grayscaler:
 - Every schedule profile has its own enable/disable toggle, so a schedule can mix global and schedule-specific behavior per rule layer
 - Schedule profiles can import from global, import from another schedule, or clear back to default
 - Each schedule can be exported as its own backup file, and new schedules can be created by importing one of those backups
+- Each schedule can decide whether Bedtime Mode is allowed to override it while the schedule is active
 - Multiple schedules can coexist; the most recently activated one wins
 - Schedules survive reboots via alarm registration on boot
 
@@ -146,7 +155,7 @@ By default, the pause overlay is spawned on demand from a foreground service, wh
 ### Backup and Restore
 - Export all settings to a JSON file
 - Import settings from a previously exported file
-- Covers app lists, schedules, schedule-owned profile rules, web rules, per-app views, appearance, and behavior prefs
+- Covers app lists, schedules, schedule-owned profile rules, Bedtime Mode settings, web rules, per-app views, appearance, and behavior prefs
 - Individual schedules can also be exported as standalone JSON backup files from the schedule editor
 
 ---
@@ -157,6 +166,7 @@ By default, the pause overlay is spawned on demand from a foreground service, wh
 |---|----------------------------------------------------------------------|
 | Whitelist mode | Listed apps stay in color; everything else is grayscale              |
 | Blacklist mode | Listed apps are grayscale; everything else stays in color            |
+| Bedtime Mode | Dedicated bedtime window with optional charging-only activation and unplug persistence |
 | Schedules | Day + time window triggers with per-schedule app list, view, overlay, and web profiles |
 | Pause | Timed pause with presets, custom input, notifications                |
 | Web shortcuts | Per-URL grayscale rules inside browsers, globally or per schedule    |

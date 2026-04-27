@@ -65,8 +65,12 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.ACTION_POWER_CONNECTED" />
+                <action android:name="android.intent.action.ACTION_POWER_DISCONNECTED" />
                 <action android:name="io.github.cloudburst.grayscaler.ACTION_SCHEDULE_START" />
                 <action android:name="io.github.cloudburst.grayscaler.ACTION_SCHEDULE_END" />
+                <action android:name="io.github.cloudburst.grayscaler.ACTION_BEDTIME_START" />
+                <action android:name="io.github.cloudburst.grayscaler.ACTION_BEDTIME_END" />
                 <action android:name="io.github.cloudburst.grayscaler.ACTION_SET_ENABLED" />
                 <action android:name="io.github.cloudburst.grayscaler.ACTION_PAUSE_GRAYSCALER" />
                 <action android:name="io.github.cloudburst.grayscaler.ACTION_APPLY_PAUSE" />
