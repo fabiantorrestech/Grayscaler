@@ -1,5 +1,7 @@
 package io.github.cloudburst.grayscaler
 
+import android.app.Activity
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -66,7 +68,7 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
 
     val effectiveStore = scheduleContext?.localStore ?: store
 
-    val handleBack: () -> Unit = {
+    fun persistState() {
         scheduleContext?.let { (ss, sched, localStore) ->
             val updatedMode = if (localStore.whitelist) "whitelist" else "blacklist"
             val updated = sched.copy(
@@ -75,9 +77,23 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
                 profileBlacklist = localStore.blacklistedApps
             )
             if (ss.schedules.any { it.id == sched.id }) ss.update(updated) else DraftScheduleSession.put(updated)
-        }
+        } ?: effectiveStore.save()
+    }
+
+    fun refreshCurrentApp() {
+        GrayscaleStateManager.invalidate(context)
+        val currentClassName = (context as? Activity)?.javaClass?.name ?: context.javaClass.name
+        val decision = GrayscaleStateManager.evaluateCurrentApp(context, currentClassName)
+        GrayscaleStateManager.applyToSystem(context, decision)
+    }
+
+    val handleBack: () -> Unit = {
+        persistState()
+        refreshCurrentApp()
         onBack()
     }
+
+    BackHandler(onBack = handleBack)
 
     var whitelist by remember { mutableStateOf(effectiveStore.whitelist) }
     val (apps, setApps) = remember { mutableStateOf<List<Pair<CatalogApp, Boolean>>>(emptyList()) }
@@ -85,6 +101,16 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
     var selectedTab by remember { mutableIntStateOf(1) }
     var showClearConfirm by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+
+    fun updateAppSnapshot() {
+        setApps(AppCatalogRepository.snapshotApps(context, effectiveStore.toggledApps))
+    }
+
+    fun persistAndRefresh() {
+        persistState()
+        updateAppSnapshot()
+        refreshCurrentApp()
+    }
 
     suspend fun refreshApps() {
         appsLoading = true
@@ -129,7 +155,7 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
                             effectiveStore.whitelist = newValue
                             effectiveStore.invalidate()
                             whitelist = newValue
-                            setApps(AppCatalogRepository.snapshotApps(context, effectiveStore.toggledApps))
+                            persistAndRefresh()
                         },
                         modifier = Modifier.padding(end = 8.dp)
                     )
@@ -205,7 +231,7 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
                                     onCheckedChange = {
                                         effectiveStore.toggleApp(app.packageName)
                                         effectiveStore.invalidate()
-                                        setApps(AppCatalogRepository.snapshotApps(context, effectiveStore.toggledApps))
+                                        persistAndRefresh()
                                     }
                                 )
                             }
@@ -230,7 +256,7 @@ fun WhitelistScreen(store: AppListStore, onBack: () -> Unit, scheduleId: String?
                     if (whitelist) effectiveStore.whitelistedApps = emptySet()
                     else effectiveStore.blacklistedApps = emptySet()
                     effectiveStore.invalidate()
-                    setApps(AppCatalogRepository.snapshotApps(context, effectiveStore.toggledApps))
+                    persistAndRefresh()
                     showClearConfirm = false
                 }) { Text("Clear") }
             },
