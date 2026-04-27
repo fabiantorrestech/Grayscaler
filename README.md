@@ -22,6 +22,7 @@ when you want to view it in color (e.g. certain images/videos where you need col
 And while the first Grayscaler app laid the groundwork for this amazing idea on Android, the truth is that just enabling/disabling certain apps is too "black and white".
 You need some granular control over things like app-overlays, keyboards, notifications, and OS events. (e.g. lockscreen, typing using an app keyboard (gboard), viewing photos for certain apps, etc..).
 
+I mostly created this to adhere to my needs, but if this is useful to others, I would love to give back to the community!
 
 The fork takes the original concept and adds a full scheduling system, automation support, per-activity class matching, URL-based rules for browsers, a pause overlay, appearance customization, backup/restore, and more.
 
