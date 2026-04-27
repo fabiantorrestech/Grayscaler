@@ -10,7 +10,7 @@ object GrayscaleStateManager {
 
     private var appListStore: AppListStore? = null
     private var scheduleStore: ScheduleStore? = null
-    private var photoViewerStore: PhotoViewerStore? = null
+    private var perAppViewsStore: PerAppViewsStore? = null
     private var overlayIgnoreStore: OverlayIgnoreStore? = null
 
     private var lastMeaningfulPkg: String? = null
@@ -25,7 +25,7 @@ object GrayscaleStateManager {
     fun invalidate(context: Context) {
         appListStore = null
         scheduleStore = null
-        photoViewerStore = null
+        perAppViewsStore = null
         overlayIgnoreStore = null
         val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
         val pkg = lastMeaningfulPkg ?: prefs.getString(PREF_LAST_MEANINGFUL_PKG, null) ?: return
@@ -49,9 +49,9 @@ object GrayscaleStateManager {
     ): Decision {
         val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
 
-        // Photo viewer auto-disable — overrides all other rules
-        val photoStore = photoViewerStore ?: PhotoViewerStore(context).also { photoViewerStore = it }
-        if (photoStore.masterEnabled && photoStore.matches(pkg, className)) {
+        // Per-app views auto-disable — overrides all other rules
+        val perAppViews = perAppViewsStore ?: PerAppViewsStore(context).also { perAppViewsStore = it }
+        if (perAppViews.masterEnabled && perAppViews.matches(pkg, className)) {
             rememberMeaningfulForeground(context, pkg, className)
             return Decision.DISABLE
         }

@@ -2,33 +2,33 @@ package io.github.cloudburst.grayscaler
 
 import android.content.Context
 
-class PhotoViewerStore(private val context: Context) {
+class PerAppViewsStore(private val context: Context) {
 
     private val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
 
-    val masterEnabled: Boolean get() = prefs.getBoolean("photo_viewer_enabled", false)
-    val diagnosticEnabled: Boolean get() = prefs.getBoolean("photo_viewer_diagnostic", false)
+    val masterEnabled: Boolean get() = prefs.getBoolean("per_app_views_enabled", false)
+    val diagnosticEnabled: Boolean get() = prefs.getBoolean("per_app_views_diagnostic", false)
 
     fun setMasterEnabled(enabled: Boolean) =
-        prefs.edit().putBoolean("photo_viewer_enabled", enabled).apply()
+        prefs.edit().putBoolean("per_app_views_enabled", enabled).apply()
 
     fun setDiagnosticEnabled(enabled: Boolean) =
-        prefs.edit().putBoolean("photo_viewer_diagnostic", enabled).apply()
+        prefs.edit().putBoolean("per_app_views_diagnostic", enabled).apply()
 
     fun isBuiltInEnabled(id: String): Boolean =
-        prefs.getBoolean("pv_builtin_${id}_on", true)
+        prefs.getBoolean("per_app_views_builtin_${id}_on", true)
 
     fun setBuiltInEnabled(id: String, enabled: Boolean) =
-        prefs.edit().putBoolean("pv_builtin_${id}_on", enabled).apply()
+        prefs.edit().putBoolean("per_app_views_builtin_${id}_on", enabled).apply()
 
     fun getBuiltInPattern(entry: BuiltInEntry): String =
-        prefs.getString("pv_builtin_${entry.id}_pat", entry.defaultPattern) ?: entry.defaultPattern
+        prefs.getString("per_app_views_builtin_${entry.id}_pat", entry.defaultPattern) ?: entry.defaultPattern
 
     fun setBuiltInPattern(id: String, pattern: String) =
-        prefs.edit().putString("pv_builtin_${id}_pat", pattern).apply()
+        prefs.edit().putString("per_app_views_builtin_${id}_pat", pattern).apply()
 
     fun getCustomEntries(): List<CustomEntry> {
-        val raw = prefs.getString("pv_custom", "") ?: ""
+        val raw = prefs.getString("per_app_views_custom", "") ?: ""
         if (raw.isBlank()) return emptyList()
         return raw.split("|").mapNotNull { item ->
             val parts = item.split("::")
@@ -38,7 +38,7 @@ class PhotoViewerStore(private val context: Context) {
 
     fun saveCustomEntries(entries: List<CustomEntry>) {
         val encoded = entries.joinToString("|") { "${it.packageName}::${it.classPattern}::${it.enabled}" }
-        prefs.edit().putString("pv_custom", encoded).apply()
+        prefs.edit().putString("per_app_views_custom", encoded).apply()
     }
 
     fun matches(pkg: String, className: String): Boolean {

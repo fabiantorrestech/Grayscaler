@@ -17,6 +17,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -274,7 +275,7 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
                 onOpenOverlayIgnore = { navController.navigate("overlay_ignore") },
                 onOpenPermissions = { navController.navigate("permissions") },
                 onOpenAppearance = { navController.navigate("appearance") },
-                onOpenPhotoViewer = { navController.navigate("photo_viewer") },
+                onOpenPerAppViews = { navController.navigate("per_app_views") },
                 onOpenWhitelist = { navController.navigate("whitelist") },
                 onOpenWebShortcuts = { navController.navigate("web_shortcuts") },
                 onOpenBackupRestore = { navController.navigate("backup_restore") },
@@ -327,8 +328,8 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
         composable("appearance") {
             AppearanceSettingsScreen(onBack = { navController.popBackStack() })
         }
-        composable("photo_viewer") {
-            PhotoViewerSettingsScreen(onBack = { navController.popBackStack() })
+        composable("per_app_views") {
+            PerAppViewsSettingsScreen(onBack = { navController.popBackStack() })
         }
         composable("whitelist") {
             WhitelistScreen(store = store, onBack = { navController.popBackStack() })
@@ -359,7 +360,7 @@ private fun MainScreen(
     onOpenOverlayIgnore: () -> Unit,
     onOpenPermissions: () -> Unit,
     onOpenAppearance: () -> Unit,
-    onOpenPhotoViewer: () -> Unit,
+    onOpenPerAppViews: () -> Unit,
     onOpenWhitelist: () -> Unit,
     onOpenWebShortcuts: () -> Unit,
     onOpenBackupRestore: () -> Unit,
@@ -419,7 +420,10 @@ private fun MainScreen(
     }
     Scaffold(
         topBar = {
-            Surface {
+            Surface(
+                shadowElevation = 8.dp,
+                tonalElevation = 3.dp
+            ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -473,7 +477,13 @@ private fun MainScreen(
             }
         }
     ) { innerPadding ->
-        Column(modifier = Modifier.padding(innerPadding).verticalScroll(rememberScrollState())) {
+        Column(
+            modifier = Modifier
+                .padding(innerPadding)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
             if (!hasWriteSecure) {
                 PermissionBanner(
                     message = "Secure settings permission missing — grayscale cannot be applied",
@@ -495,201 +505,111 @@ private fun MainScreen(
                     }
                 )
             }
-            // 1. App List
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Global App List",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
-                    Text(
-                        "Whitelist / Blacklist settings",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                MainScreenActionButton(onClick = onOpenWhitelist)
-            }
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            // 2. OS Events
-            Text(
-                "OS Events",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-            )
-            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                Column(modifier = Modifier.padding(vertical = 6.dp)) {
-                    Text(
-                        "App Switcher",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 4.dp)
-                    )
-                    SystemUiModeToggle(appSwitcherMode) { mode ->
-                        appSwitcherMode = mode
-                        prefs.edit().putString("app_switcher_mode", mode).apply()
-                    }
-                }
-                Column(modifier = Modifier.padding(vertical = 6.dp)) {
-                    Text(
-                        "Lock Screen",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 4.dp)
-                    )
-                    SystemUiModeToggle(lockscreenMode) { mode ->
-                        lockscreenMode = mode
-                        prefs.edit().putString("lockscreen_mode", mode).apply()
-                    }
-                }
-                Column(modifier = Modifier.padding(vertical = 6.dp)) {
-                    Text(
-                        "Notification Reply (Typing)",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 2.dp)
-                    )
-                    Text(
-                        "Applies when typing a reply directly in a notification",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 4.dp)
-                    )
-                    SystemUiModeToggle(inlineReplyMode) { mode ->
-                        inlineReplyMode = mode
-                        prefs.edit().putString("inline_reply_mode", mode).apply()
-                    }
-                }
-                Column(modifier = Modifier.padding(vertical = 6.dp)) {
-                    Text(
-                        "Power Menu",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 2.dp)
-                    )
-                    Text(
-                        "Disable recommended — keeps emergency button visible",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 4.dp)
-                    )
-                    SystemUiModeToggle(powerMenuMode) { mode ->
-                        powerMenuMode = mode
-                        prefs.edit().putString("power_menu_mode", mode).apply()
-                    }
-                }
-            }
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            // 3. Ignored Overlays
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Ignored Overlays",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
-                    Text(
-                        "Apps to ignore for overlay detection",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                MainScreenActionButton(onClick = onOpenOverlayIgnore)
-            }
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            // 4. Photo Viewer
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Photo Viewer",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
-                    Text(
-                        "Per-app auto-disable settings",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                MainScreenActionButton(onClick = onOpenPhotoViewer)
-            }
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            // 5. Web Shortcuts
 
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Web Shortcuts",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
-                    Text(
-                        "PWAs and browser shortcuts",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                MainScreenActionButton(onClick = onOpenWebShortcuts)
+            HomeSectionHeader(
+                title = "Quick Controls",
+                subtitle = "Core rules and app-specific grayscale behavior."
+            )
+            HomeGroupCard {
+                HomeNavigationRow(
+                    title = "Global App List",
+                    subtitle = "Whitelist / Blacklist settings",
+                    onClick = onOpenWhitelist
+                )
+                HorizontalDivider()
+                HomeNavigationRow(
+                    title = "Per-App Views",
+                    subtitle = "Per-app auto-disable settings",
+                    onClick = onOpenPerAppViews
+                )
             }
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            // 6. Backup & Restore
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
+
+            HomeSectionHeader(
+                title = "Automation",
+                subtitle = "How Grayscaler+ behaves during system and app events."
+            )
+            HomeGroupCard {
+                Column(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
                     Text(
-                        "Backup & Restore",
-                        style = MaterialTheme.typography.bodyLarge,
+                        "OS Events",
+                        style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.secondary
                     )
-                    Text(
-                        "Export or import all saved settings",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    HomeModeSetting(
+                        title = "App Switcher",
+                        subtitle = "Control grayscale behavior while recent apps are visible.",
+                        current = appSwitcherMode,
+                        onSelect = { mode ->
+                            appSwitcherMode = mode
+                            prefs.edit().putString("app_switcher_mode", mode).apply()
+                        }
+                    )
+                    HorizontalDivider()
+                    HomeModeSetting(
+                        title = "Lock Screen",
+                        subtitle = "Choose whether grayscale stays active while the device is locked.",
+                        current = lockscreenMode,
+                        onSelect = { mode ->
+                            lockscreenMode = mode
+                            prefs.edit().putString("lockscreen_mode", mode).apply()
+                        }
+                    )
+                    HorizontalDivider()
+                    HomeModeSetting(
+                        title = "Notification Reply",
+                        subtitle = "Applies while typing a reply directly inside a notification.",
+                        current = inlineReplyMode,
+                        onSelect = { mode ->
+                            inlineReplyMode = mode
+                            prefs.edit().putString("inline_reply_mode", mode).apply()
+                        }
+                    )
+                    HorizontalDivider()
+                    HomeModeSetting(
+                        title = "Power Menu",
+                        subtitle = "Disable recommended — keeps emergency controls visible.",
+                        current = powerMenuMode,
+                        onSelect = { mode ->
+                            powerMenuMode = mode
+                            prefs.edit().putString("power_menu_mode", mode).apply()
+                        }
                     )
                 }
-                MainScreenActionButton(onClick = onOpenBackupRestore)
             }
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            // 7. Permissions
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Permissions",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
-                    Text(
-                        "Grant required app permissions",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                MainScreenActionButton(onClick = onOpenPermissions)
+
+            HomeGroupCard {
+                HomeNavigationRow(
+                    title = "Ignored Overlays",
+                    subtitle = "Apps to ignore for overlay detection",
+                    onClick = onOpenOverlayIgnore
+                )
+                HorizontalDivider()
+                HomeNavigationRow(
+                    title = "Web Shortcuts",
+                    subtitle = "PWAs and browser shortcuts",
+                    onClick = onOpenWebShortcuts
+                )
+            }
+
+            HomeSectionHeader(
+                title = "Utilities",
+                subtitle = "Permissions, exports, and maintenance tools."
+            )
+            HomeGroupCard {
+                HomeNavigationRow(
+                    title = "Permissions",
+                    subtitle = "Grant required app permissions",
+                    onClick = onOpenPermissions
+                )
+                HorizontalDivider()
+                HomeNavigationRow(
+                    title = "Backup & Restore",
+                    subtitle = "Export or import all saved settings",
+                    onClick = onOpenBackupRestore
+                )
             }
         }
     }
@@ -820,6 +740,87 @@ private fun PermissionBanner(
                 colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onErrorContainer)
             ) { Text(actionLabel) }
         }
+    }
+}
+
+@Composable
+private fun HomeSectionHeader(title: String, subtitle: String) {
+    Column(
+        modifier = Modifier.padding(horizontal = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.secondary
+        )
+        Text(
+            subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun HomeGroupCard(content: @Composable ColumnScope.() -> Unit) {
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        tonalElevation = 2.dp,
+        shadowElevation = 2.dp
+    ) {
+        Column(content = content)
+    }
+}
+
+@Composable
+private fun HomeNavigationRow(
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.secondary
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        MainScreenActionButton(onClick = onClick)
+    }
+}
+
+@Composable
+private fun HomeModeSetting(
+    title: String,
+    subtitle: String,
+    current: String,
+    onSelect: (String) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        SystemUiModeToggle(current) { mode -> onSelect(mode) }
     }
 }
 

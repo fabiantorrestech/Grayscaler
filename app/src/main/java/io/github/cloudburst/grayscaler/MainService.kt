@@ -95,7 +95,7 @@ class MainService : AccessibilityService() {
         val className = event.className?.toString() ?: ""
 
         // 1. Diagnostic capture — runs independently of master switch
-        if (prefs.getBoolean("photo_viewer_diagnostic", false)) {
+        if (prefs.getBoolean("per_app_views_diagnostic", false)) {
             val isNoise = pkg in OverlayIgnoreStore.SYSTEM_IGNORES
                 || RECENTS_KEYWORDS.any { className.contains(it, ignoreCase = true) }
                 || className.contains("Launcher", ignoreCase = true)

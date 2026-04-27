@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -44,21 +45,21 @@ import androidx.lifecycle.LifecycleEventObserver
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PhotoViewerSettingsScreen(onBack: () -> Unit) {
+fun PerAppViewsSettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
-    val store = remember { PhotoViewerStore(context) }
+    val store = remember { PerAppViewsStore(context) }
     val prefs = remember { context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE) }
 
     var masterEnabled by remember { mutableStateOf(store.masterEnabled) }
     var diagnosticEnabled by remember { mutableStateOf(store.diagnosticEnabled) }
 
     val builtInEnabled = remember {
-        PhotoViewerStore.BUILT_IN_ENTRIES.map { entry ->
+        PerAppViewsStore.BUILT_IN_ENTRIES.map { entry ->
             mutableStateOf(store.isBuiltInEnabled(entry.id))
         }
     }
     val builtInPatterns = remember {
-        PhotoViewerStore.BUILT_IN_ENTRIES.map { entry ->
+        PerAppViewsStore.BUILT_IN_ENTRIES.map { entry ->
             mutableStateOf(store.getBuiltInPattern(entry))
         }
     }
@@ -98,14 +99,44 @@ fun PhotoViewerSettingsScreen(onBack: () -> Unit) {
             editCustomPattern = customEntries[i].classPattern
         }
     }
+    var showInfoDialog by remember { mutableStateOf(false) }
+
+    if (showInfoDialog) {
+        AlertDialog(
+            onDismissRequest = { showInfoDialog = false },
+            title = { Text("Per-App Views") },
+            text = {
+                Text(
+                    "For certain applications, you may only need 1 view to be whitelisted " +
+                        "(commonly, photo and video viewers), but want the rest of the application " +
+                        "to remain in Grayscale.\n\n" +
+                        "You can utilize the \"Show last seen activity\" toggle to see if your apps " +
+                        "utilize different views/activities that you can whitelist here.\n\n" +
+                        "Add your app's package name (found in Settings > your application > App Info > " +
+                        "scroll to the bottom > <com.orgname.packagename>) " +
+                        "(e.g. io.github.cloudburst.grayscaler)."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showInfoDialog = false }) {
+                    Text("OK")
+                }
+            }
+        )
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Photo Viewer") },
+                title = { Text("Per-App Views") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showInfoDialog = true }) {
+                        Icon(Icons.Filled.Info, contentDescription = "About per-app views")
                     }
                 }
             )
@@ -118,7 +149,10 @@ fun PhotoViewerSettingsScreen(onBack: () -> Unit) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Auto-disable in photo viewers", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Auto-disable per-app views whitelisting",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
                     Switch(checked = masterEnabled, onCheckedChange = {
                         masterEnabled = it; store.setMasterEnabled(it)
                     })
@@ -189,7 +223,7 @@ fun PhotoViewerSettingsScreen(onBack: () -> Unit) {
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                 )
             }
-            itemsIndexed(PhotoViewerStore.BUILT_IN_ENTRIES) { index, entry ->
+            itemsIndexed(PerAppViewsStore.BUILT_IN_ENTRIES) { index, entry ->
                 val enabled = builtInEnabled[index]
                 val pattern = builtInPatterns[index]
                 val hasPattern = pattern.value.isNotBlank()
@@ -336,7 +370,7 @@ fun PhotoViewerSettingsScreen(onBack: () -> Unit) {
                 TextButton(
                     onClick = {
                         val updated = customEntries.toMutableList().also {
-                            it[index] = PhotoViewerStore.CustomEntry(
+                            it[index] = PerAppViewsStore.CustomEntry(
                                 editCustomPkg.trim(),
                                 editCustomPattern.trim(),
                                 it[index].enabled
@@ -357,7 +391,7 @@ fun PhotoViewerSettingsScreen(onBack: () -> Unit) {
 
     if (editingBuiltInIndex != null) {
         val index = editingBuiltInIndex!!
-        val entry = PhotoViewerStore.BUILT_IN_ENTRIES[index]
+        val entry = PerAppViewsStore.BUILT_IN_ENTRIES[index]
         AlertDialog(
             onDismissRequest = { editingBuiltInIndex = null },
             title = { Text("Edit Pattern — ${entry.displayName}") },
@@ -429,7 +463,7 @@ fun PhotoViewerSettingsScreen(onBack: () -> Unit) {
             confirmButton = {
                 TextButton(
                     onClick = {
-                        val e = PhotoViewerStore.CustomEntry(newPkg.trim(), newPattern.trim(), true)
+                        val e = PerAppViewsStore.CustomEntry(newPkg.trim(), newPattern.trim(), true)
                         val updated = customEntries + e
                         customEntries = updated
                         store.saveCustomEntries(updated)
