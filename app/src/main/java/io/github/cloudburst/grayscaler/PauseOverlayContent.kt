@@ -43,6 +43,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -65,9 +66,9 @@ fun PauseOverlayContent(
     onOpenApp: () -> Unit
 ) {
     val context = LocalContext.current
-    val prefs = remember { context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE) }
+    val prefs = remember { GrayscalerToggleCoordinator.prefs(context) }
 
-    var grayscalerEnabled by remember { mutableStateOf(prefs.getBoolean("grayscaler_enabled", true)) }
+    var grayscalerEnabled by remember { mutableStateOf(GrayscalerToggleCoordinator.isEnabled(context)) }
     var lastDecision by remember { mutableStateOf(GrayscaleStateManager.lastDecision) }
     var pauseUntil by remember { mutableStateOf(prefs.getLong("pause_until", 0L)) }
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -82,6 +83,23 @@ fun PauseOverlayContent(
             delay(1000L)
             now = System.currentTimeMillis()
         }
+    }
+
+    DisposableEffect(prefs) {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            when (key) {
+                GrayscalerToggleCoordinator.KEY_ENABLED -> {
+                    grayscalerEnabled = GrayscalerToggleCoordinator.isEnabled(context)
+                    lastDecision = GrayscaleStateManager.lastDecision
+                }
+                "pause_until" -> {
+                    pauseUntil = prefs.getLong("pause_until", 0L)
+                    now = System.currentTimeMillis()
+                }
+            }
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
     }
 
     fun applyPause(seconds: Long) {
@@ -322,9 +340,8 @@ fun PauseOverlayContent(
                     Switch(
                         checked = grayscalerEnabled,
                         onCheckedChange = { enabled ->
+                            GrayscalerToggleCoordinator.setEnabled(context, enabled)
                             grayscalerEnabled = enabled
-                            prefs.edit().putBoolean("grayscaler_enabled", enabled).apply()
-                            GrayscaleStateManager.invalidate(context)
                             lastDecision = GrayscaleStateManager.lastDecision
                         }
                     )

@@ -53,6 +53,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -92,7 +93,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -368,9 +368,9 @@ private fun MainScreen(
     onOpenDeveloper: () -> Unit
 ) {
     val context = LocalContext.current
-    val prefs = remember { context.getSharedPreferences("grayscaler_prefs", android.content.Context.MODE_PRIVATE) }
+    val prefs = remember { GrayscalerToggleCoordinator.prefs(context) }
 
-    var grayscalerEnabled by remember { mutableStateOf(prefs.getBoolean("grayscaler_enabled", true)) }
+    var grayscalerEnabled by remember { mutableStateOf(GrayscalerToggleCoordinator.isEnabled(context)) }
     var showHelp by remember { mutableStateOf(false) }
     var showNotifPrompt by remember {
         mutableStateOf(
@@ -418,6 +418,15 @@ private fun MainScreen(
         )
         onDispose { context.contentResolver.unregisterContentObserver(observer) }
     }
+    DisposableEffect(prefs) {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == GrayscalerToggleCoordinator.KEY_ENABLED) {
+                grayscalerEnabled = GrayscalerToggleCoordinator.isEnabled(context)
+            }
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
     Scaffold(
         topBar = {
             Surface(
@@ -448,9 +457,7 @@ private fun MainScreen(
                         Switch(
                             checked = grayscalerEnabled,
                             onCheckedChange = { enabled ->
-                                grayscalerEnabled = enabled
-                                prefs.edit().putBoolean("grayscaler_enabled", enabled).apply()
-                                GrayscaleStateManager.invalidate(context)
+                                GrayscalerToggleCoordinator.setEnabled(context, enabled)
                             }
                         )
                     }
