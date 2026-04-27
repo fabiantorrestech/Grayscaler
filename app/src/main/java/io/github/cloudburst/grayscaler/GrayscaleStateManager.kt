@@ -28,6 +28,18 @@ object GrayscaleStateManager {
         perAppViewsStore = null
         overlayIgnoreStore = null
         val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+
+        // If the outcome is unambiguous regardless of which app is foreground, apply directly.
+        // This handles cases where there is no last meaningful foreground (e.g. lockscreen).
+        if (prefs.getLong("pause_until", 0L) > System.currentTimeMillis()) {
+            applyToSystem(context, Decision.DISABLE)
+            return
+        }
+        if (!prefs.getBoolean("grayscaler_enabled", true)) {
+            applyToSystem(context, Decision.DISABLE)
+            return
+        }
+
         val pkg = lastMeaningfulPkg ?: prefs.getString(PREF_LAST_MEANINGFUL_PKG, null) ?: return
         val cls = lastMeaningfulClassName.ifEmpty { prefs.getString(PREF_LAST_MEANINGFUL_CLASS, "") ?: "" }
         applyToSystem(context, evaluate(pkg, cls, context))

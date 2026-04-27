@@ -112,9 +112,14 @@ fun PerAppViewsSettingsScreen(onBack: () -> Unit) {
                         "to remain in Grayscale.\n\n" +
                         "You can utilize the \"Show last seen activity\" toggle to see if your apps " +
                         "utilize different views/activities that you can whitelist here.\n\n" +
-                        "Add your app's package name (found in Settings > your application > App Info > " +
+                        "1. Add your app's package name (found in Settings > your application > App Info > " +
                         "scroll to the bottom > <com.orgname.packagename>) " +
-                        "(e.g. io.github.cloudburst.grayscaler)."
+                        "(e.g. io.github.cloudburst.grayscaler).\n\n" +
+                        "2. Once you have \"Show last seen activity\" toggled, you can switch to your app, " +
+                        "invoke the photo viewer or whatever view you want whitelisted, then switch back " +
+                        "here via the app switcher. You will see the class/view/activity name.\n\n" +
+                        "3. Scroll down to the bottom and press \"Add custom app\" to input both the " +
+                        "package name and the view/class/activity name."
                 )
             },
             confirmButton = {

@@ -28,17 +28,30 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import io.github.cloudburst.grayscaler.ui.theme.GrayscalerTheme
 
-class MainService : AccessibilityService(), LifecycleOwner, SavedStateRegistryOwner {
-
-    private val lifecycleRegistry = LifecycleRegistry(this)
-    private val savedStateRegistryController = SavedStateRegistryController.create(this)
-
-    override val lifecycle: Lifecycle get() = lifecycleRegistry
-    override val savedStateRegistry: SavedStateRegistry get() = savedStateRegistryController.savedStateRegistry
+class MainService : AccessibilityService() {
 
     private lateinit var windowManager: WindowManager
     private var overlayView: ComposeView? = null
     private var overlayParams: WindowManager.LayoutParams? = null
+    private var overlayLifecycleOwner: OverlayLifecycleOwner? = null
+
+    private inner class OverlayLifecycleOwner : LifecycleOwner, SavedStateRegistryOwner {
+        private val lifecycleRegistry = LifecycleRegistry(this)
+        private val savedStateRegistryController = SavedStateRegistryController.create(this)
+        override val lifecycle: Lifecycle get() = lifecycleRegistry
+        override val savedStateRegistry: SavedStateRegistry get() = savedStateRegistryController.savedStateRegistry
+
+        fun start() {
+            savedStateRegistryController.performRestore(null)
+            lifecycleRegistry.currentState = Lifecycle.State.CREATED
+            lifecycleRegistry.currentState = Lifecycle.State.STARTED
+            lifecycleRegistry.currentState = Lifecycle.State.RESUMED
+        }
+
+        fun destroy() {
+            lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+        }
+    }
 
     // Package name of the browser currently in foreground, null if not a browser
     private var currentBrowserPkg: String? = null
@@ -86,11 +99,6 @@ class MainService : AccessibilityService(), LifecycleOwner, SavedStateRegistryOw
 
     override fun onCreate() {
         super.onCreate()
-        savedStateRegistryController.performRestore(null)
-        lifecycleRegistry.currentState = Lifecycle.State.CREATED
-        lifecycleRegistry.currentState = Lifecycle.State.STARTED
-        lifecycleRegistry.currentState = Lifecycle.State.RESUMED
-
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
         registerReceiver(screenReceiver, IntentFilter().apply {
@@ -107,11 +115,15 @@ class MainService : AccessibilityService(), LifecycleOwner, SavedStateRegistryOw
 
         val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
         prefs.registerOnSharedPreferenceChangeListener(prefChangeListener)
+    }
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
         if (prefs.getBoolean("persistent_overlay_mode", false)) registerPersistentOverlay()
     }
 
     override fun onDestroy() {
-        lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         unregisterReceiver(screenReceiver)
         unregisterReceiver(overlayReceiver)
         getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
@@ -130,11 +142,15 @@ class MainService : AccessibilityService(), LifecycleOwner, SavedStateRegistryOw
             PixelFormat.TRANSLUCENT
         )
         overlayParams = params
+        val lifecycleOwner = OverlayLifecycleOwner().also {
+            it.start()
+            overlayLifecycleOwner = it
+        }
         val view = ComposeView(this).apply {
             visibility = View.GONE
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
-            setViewTreeLifecycleOwner(this@MainService)
-            setViewTreeSavedStateRegistryOwner(this@MainService)
+            setViewTreeLifecycleOwner(lifecycleOwner)
+            setViewTreeSavedStateRegistryOwner(lifecycleOwner)
             setContent {
                 GrayscalerTheme {
                     PauseOverlayContent(
@@ -156,6 +172,8 @@ class MainService : AccessibilityService(), LifecycleOwner, SavedStateRegistryOw
     }
 
     private fun unregisterPersistentOverlay() {
+        overlayLifecycleOwner?.destroy()
+        overlayLifecycleOwner = null
         overlayView?.let { windowManager.removeView(it) }
         overlayView = null
         overlayParams = null
