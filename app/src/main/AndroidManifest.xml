@@ -83,6 +83,19 @@
             android:name=".PauseOverlayService"
             android:exported="false" />
 
+        <receiver
+            android:name=".GrayscalerWidgetReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="io.github.cloudburst.grayscaler.ACTION_WIDGET_STATE_CHANGED" />
+                <action android:name="io.github.cloudburst.grayscaler.ACTION_WIDGET_TICK" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/grayscaler_widget_info" />
+        </receiver>
+
         <service
             android:name=".GrayscalerTileService"
             android:exported="true"

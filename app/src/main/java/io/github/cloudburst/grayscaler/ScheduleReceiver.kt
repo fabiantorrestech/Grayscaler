@@ -90,6 +90,8 @@ class ScheduleReceiver : BroadcastReceiver() {
         val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
         prefs.edit().putBoolean("grayscaler_enabled", enabled).apply()
         GrayscaleStateManager.invalidate(context)
+        GrayscalerToggleCoordinator.requestTileSync(context)
+        GrayscalerWidgetReceiver.triggerUpdate(context)
     }
 
     private fun onPauseGrayscaler(context: Context) {
@@ -132,6 +134,12 @@ class ScheduleReceiver : BroadcastReceiver() {
         alarmManager.set(AlarmManager.RTC_WAKEUP, pauseUntil, pi)
 
         postPauseNotification(context, seconds, pauseUntil, prefs)
+
+        // Update widget and schedule tick if live countdown is enabled
+        GrayscalerWidgetReceiver.triggerUpdate(context)
+        if (WidgetSettingsStore.isLiveCountdown(context)) {
+            GrayscalerWidgetReceiver.scheduleTickAlarm(context)
+        }
     }
 
     private fun onPauseEnd(context: Context) {
@@ -143,6 +151,8 @@ class ScheduleReceiver : BroadcastReceiver() {
         cancelNotifications(context)
 
         GrayscaleStateManager.invalidate(context)
+        GrayscalerWidgetReceiver.cancelTickAlarm(context)
+        GrayscalerWidgetReceiver.triggerUpdate(context)
     }
 
     private fun onPauseNotifyCountdown(context: Context, intent: Intent) {

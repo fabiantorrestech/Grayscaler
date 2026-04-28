@@ -183,6 +183,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+    }
+
     override fun onPause() {
         super.onPause()
         store.save()
@@ -208,6 +213,12 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStore) {
     val navController = rememberNavController()
+    val activity = LocalContext.current as? MainActivity
+    androidx.compose.runtime.LaunchedEffect(activity?.intent) {
+        val target = activity?.intent?.getStringExtra("navigate_to") ?: return@LaunchedEffect
+        activity.intent.removeExtra("navigate_to")
+        navController.navigate(target)
+    }
     NavHost(
         navController = navController,
         startDestination = "main",
@@ -249,7 +260,8 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
                 onOpenWebShortcuts = { navController.navigate("web_shortcuts") },
                 onOpenBackupRestore = { navController.navigate("backup_restore") },
                 onOpenPause = { navController.navigate("pause") },
-                onOpenDeveloper = { navController.navigate("developer") }
+                onOpenDeveloper = { navController.navigate("developer") },
+                onOpenWidgetSettings = { navController.navigate("widget_settings") }
             )
         }
         composable("schedules") {
@@ -353,6 +365,9 @@ private fun AppNavigation(store: AppListStore, webShortcutStore: WebShortcutStor
         composable("developer") {
             DeveloperSettingsScreen(onBack = { navController.popBackStack() })
         }
+        composable("widget_settings") {
+            WidgetSettingsScreen(onBack = { navController.popBackStack() })
+        }
     }
 }
 
@@ -370,7 +385,8 @@ private fun MainScreen(
     onOpenWebShortcuts: () -> Unit,
     onOpenBackupRestore: () -> Unit,
     onOpenPause: () -> Unit,
-    onOpenDeveloper: () -> Unit
+    onOpenDeveloper: () -> Unit,
+    onOpenWidgetSettings: () -> Unit
 ) {
     val context = LocalContext.current
     val prefs = remember { GrayscalerToggleCoordinator.prefs(context) }
@@ -624,6 +640,18 @@ private fun MainScreen(
                     title = "Backup & Restore",
                     subtitle = "Export or import all saved settings",
                     onClick = onOpenBackupRestore
+                )
+            }
+
+            HomeSectionHeader(
+                title = "Widget Settings",
+                subtitle = "Configure the Grayscaler+ homescreen widget."
+            )
+            HomeGroupCard {
+                HomeNavigationRow(
+                    title = "Widget Settings",
+                    subtitle = "Live countdown, status monitoring",
+                    onClick = onOpenWidgetSettings
                 )
             }
         }

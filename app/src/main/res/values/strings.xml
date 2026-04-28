@@ -2,4 +2,5 @@
     <string name="app_name">Grayscaler+</string>
     <string name="shortcut_pause_overlay_short">Pause Popup</string>
     <string name="shortcut_pause_overlay_long">Open Grayscaler+ pause popup</string>
+    <string name="widget_description">Quick access to Grayscaler+ pause controls</string>
 </resources>

@@ -137,7 +137,7 @@ fun GrayscalerTheme(content: @Composable () -> Unit) {
     )
 }
 
-private fun createCustomColorScheme(
+internal fun createCustomColorScheme(
     darkTheme: Boolean,
     primary: Color,
     accent: Color,
@@ -201,7 +201,7 @@ private fun createCustomColorScheme(
     }
 }
 
-private fun applyOledOverride(scheme: ColorScheme): ColorScheme =
+internal fun applyOledOverride(scheme: ColorScheme): ColorScheme =
     scheme.copy(
         background = Color.Black,
         surface = Color.Black,
