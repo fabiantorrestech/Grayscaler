@@ -26,6 +26,7 @@ class ScheduleReceiver : BroadcastReceiver() {
             ACTION_BEDTIME_START -> onBedtimeBoundary(context)
             ACTION_BEDTIME_END -> onBedtimeBoundary(context)
             ACTION_SET_ENABLED -> onSetEnabled(context, intent)
+            ACTION_TOGGLE_ENABLED -> onToggleEnabled(context)
             ACTION_PAUSE_GRAYSCALER -> onPauseGrayscaler(context)
             ACTION_APPLY_PAUSE -> onApplyPause(context, intent)
             ACTION_PAUSE_END -> onPauseEnd(context)
@@ -88,7 +89,16 @@ class ScheduleReceiver : BroadcastReceiver() {
     private fun onSetEnabled(context: Context, intent: Intent) {
         val enabled = intent.getBooleanExtra(EXTRA_ENABLED, true)
         val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
-        prefs.edit().putBoolean("grayscaler_enabled", enabled).apply()
+        prefs.edit().putBoolean("grayscaler_enabled", enabled).commit()
+        GrayscaleStateManager.invalidate(context)
+        GrayscalerToggleCoordinator.requestTileSync(context)
+        GrayscalerWidgetReceiver.triggerUpdate(context)
+    }
+
+    private fun onToggleEnabled(context: Context) {
+        val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+        val current = prefs.getBoolean("grayscaler_enabled", true)
+        prefs.edit().putBoolean("grayscaler_enabled", !current).commit()
         GrayscaleStateManager.invalidate(context)
         GrayscalerToggleCoordinator.requestTileSync(context)
         GrayscalerWidgetReceiver.triggerUpdate(context)
@@ -119,7 +129,7 @@ class ScheduleReceiver : BroadcastReceiver() {
         cancelPauseNotifyAlarm(context)
         cancelNotifications(context)
 
-        prefs.edit().putLong("pause_until", pauseUntil).apply()
+        prefs.edit().putLong("pause_until", pauseUntil).commit()
         GrayscaleStateManager.invalidate(context)
 
         // Schedule alarm to end the pause
@@ -144,7 +154,7 @@ class ScheduleReceiver : BroadcastReceiver() {
 
     private fun onPauseEnd(context: Context) {
         val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
-        prefs.edit().putLong("pause_until", 0L).apply()
+        prefs.edit().putLong("pause_until", 0L).commit()
 
         cancelPauseEndAlarm(context)
         cancelPauseNotifyAlarm(context)
@@ -293,6 +303,7 @@ class ScheduleReceiver : BroadcastReceiver() {
         const val ACTION_BEDTIME_START = "io.github.cloudburst.grayscaler.ACTION_BEDTIME_START"
         const val ACTION_BEDTIME_END = "io.github.cloudburst.grayscaler.ACTION_BEDTIME_END"
         const val ACTION_SET_ENABLED = "io.github.cloudburst.grayscaler.ACTION_SET_ENABLED"
+        const val ACTION_TOGGLE_ENABLED = "io.github.cloudburst.grayscaler.ACTION_TOGGLE_ENABLED"
         const val ACTION_PAUSE_GRAYSCALER = "io.github.cloudburst.grayscaler.ACTION_PAUSE_GRAYSCALER"
         const val ACTION_APPLY_PAUSE = "io.github.cloudburst.grayscaler.ACTION_APPLY_PAUSE"
         const val ACTION_PAUSE_END = "io.github.cloudburst.grayscaler.ACTION_PAUSE_END"

@@ -5,6 +5,7 @@ import android.content.Context
 object WidgetSettingsStore {
     private const val KEY_LIVE_COUNTDOWN = "widget_live_countdown"
     private const val KEY_STATUS_MONITORING = "widget_status_monitoring"
+    private const val KEY_WIDGET_CUSTOM_FONT = "widget_custom_font"
 
     fun isLiveCountdown(context: Context): Boolean =
         GrayscalerToggleCoordinator.prefs(context).getBoolean(KEY_LIVE_COUNTDOWN, true)
@@ -20,5 +21,13 @@ object WidgetSettingsStore {
     fun setStatusMonitoring(context: Context, enabled: Boolean) {
         GrayscalerToggleCoordinator.prefs(context)
             .edit().putBoolean(KEY_STATUS_MONITORING, enabled).apply()
+    }
+
+    fun isWidgetCustomFont(context: Context): Boolean =
+        GrayscalerToggleCoordinator.prefs(context).getBoolean(KEY_WIDGET_CUSTOM_FONT, false)
+
+    fun setWidgetCustomFont(context: Context, enabled: Boolean) {
+        GrayscalerToggleCoordinator.prefs(context)
+            .edit().putBoolean(KEY_WIDGET_CUSTOM_FONT, enabled).apply()
     }
 }

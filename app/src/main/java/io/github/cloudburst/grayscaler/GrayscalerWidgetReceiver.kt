@@ -13,18 +13,26 @@ import kotlinx.coroutines.launch
 
 class GrayscalerWidgetReceiver : GlanceAppWidgetReceiver() {
 
-    override val glanceAppWidget: GlanceAppWidget = GrayscalerWidget()
+    override val glanceAppWidget: GlanceAppWidget = GrayscalerMicroWidget()
 
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
         when (intent.action) {
-            ACTION_WIDGET_STATE_CHANGED -> triggerUpdate(context)
+            ACTION_WIDGET_STATE_CHANGED,
             ACTION_WIDGET_TICK -> {
-                triggerUpdate(context)
-                // Reschedule tick only if pause is still active and live countdown is on
-                val pauseUntil = GrayscalerToggleCoordinator.prefs(context).getLong("pause_until", 0L)
-                if (pauseUntil > System.currentTimeMillis() && WidgetSettingsStore.isLiveCountdown(context)) {
-                    scheduleTickAlarm(context)
+                val pending = goAsync()
+                CoroutineScope(Dispatchers.Default).launch {
+                    try {
+                        updateAllWidgets(context)
+                        if (intent.action == ACTION_WIDGET_TICK) {
+                            val pauseUntil = GrayscalerToggleCoordinator.prefs(context).getLong("pause_until", 0L)
+                            if (pauseUntil > System.currentTimeMillis() && WidgetSettingsStore.isLiveCountdown(context)) {
+                                scheduleTickAlarm(context)
+                            }
+                        }
+                    } finally {
+                        pending.finish()
+                    }
                 }
             }
         }
@@ -35,10 +43,18 @@ class GrayscalerWidgetReceiver : GlanceAppWidgetReceiver() {
         const val ACTION_WIDGET_TICK = "io.github.cloudburst.grayscaler.ACTION_WIDGET_TICK"
         private const val WIDGET_TICK_REQUEST_CODE = 9996
 
+        suspend fun updateAllWidgets(context: Context) {
+            GrayscalerMicroWidget().updateAll(context)
+            GrayscalerPortraitWidget().updateAll(context)
+            GrayscalerLandscapeWidget().updateAll(context)
+        }
+
         fun triggerUpdate(context: Context) {
-            CoroutineScope(Dispatchers.Default).launch {
-                GrayscalerWidget().updateAll(context)
-            }
+            context.sendBroadcast(
+                Intent(context, GrayscalerWidgetReceiver::class.java).apply {
+                    action = ACTION_WIDGET_STATE_CHANGED
+                }
+            )
         }
 
         fun scheduleTickAlarm(context: Context) {

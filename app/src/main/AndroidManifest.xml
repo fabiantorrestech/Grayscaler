@@ -85,7 +85,8 @@
 
         <receiver
             android:name=".GrayscalerWidgetReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:label="Grayscaler+ Micro">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
                 <action android:name="io.github.cloudburst.grayscaler.ACTION_WIDGET_STATE_CHANGED" />
@@ -94,6 +95,30 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/grayscaler_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".GrayscalerPortraitWidgetReceiver"
+            android:exported="true"
+            android:label="Grayscaler+ Portrait">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/grayscaler_portrait_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".GrayscalerLandscapeWidgetReceiver"
+            android:exported="true"
+            android:label="Grayscaler+ Landscape">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/grayscaler_landscape_widget_info" />
         </receiver>
 
         <service

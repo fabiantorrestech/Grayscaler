@@ -24,7 +24,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.glance.appwidget.updateAll
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,6 +39,7 @@ fun WidgetSettingsScreen(onBack: () -> Unit) {
 
     var liveCountdown by remember { mutableStateOf(WidgetSettingsStore.isLiveCountdown(context)) }
     var statusMonitoring by remember { mutableStateOf(WidgetSettingsStore.isStatusMonitoring(context)) }
+    var widgetCustomFont by remember { mutableStateOf(WidgetSettingsStore.isWidgetCustomFont(context)) }
 
     Scaffold(
         topBar = {
@@ -97,7 +97,7 @@ fun WidgetSettingsScreen(onBack: () -> Unit) {
                             } else if (!enabled) {
                                 GrayscalerWidgetReceiver.cancelTickAlarm(context)
                             }
-                            scope.launch { GrayscalerWidget().updateAll(context) }
+                            scope.launch { GrayscalerWidgetReceiver.updateAllWidgets(context) }
                         }
                     )
                     HorizontalDivider()
@@ -109,7 +109,19 @@ fun WidgetSettingsScreen(onBack: () -> Unit) {
                         onCheckedChange = { enabled ->
                             WidgetSettingsStore.setStatusMonitoring(context, enabled)
                             statusMonitoring = enabled
-                            scope.launch { GrayscalerWidget().updateAll(context) }
+                            scope.launch { GrayscalerWidgetReceiver.updateAllWidgets(context) }
+                        }
+                    )
+                    HorizontalDivider()
+                    WidgetToggleRow(
+                        title = "Use App Font",
+                        subtitle = "Apply a distinct built-in fallback font to widget text. Off uses the launcher/system default. " +
+                            "Note: the app's actual custom font files cannot be loaded in widgets.",
+                        checked = widgetCustomFont,
+                        onCheckedChange = { enabled ->
+                            WidgetSettingsStore.setWidgetCustomFont(context, enabled)
+                            widgetCustomFont = enabled
+                            scope.launch { GrayscalerWidgetReceiver.updateAllWidgets(context) }
                         }
                     )
                 }
