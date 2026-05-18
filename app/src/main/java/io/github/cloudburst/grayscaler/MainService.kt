@@ -34,6 +34,7 @@ class MainService : AccessibilityService() {
     private var overlayView: ComposeView? = null
     private var overlayParams: WindowManager.LayoutParams? = null
     private var overlayLifecycleOwner: OverlayLifecycleOwner? = null
+    private var countdownOverlay: PauseCountdownOverlayManager? = null
 
     private inner class OverlayLifecycleOwner : LifecycleOwner, SavedStateRegistryOwner {
         private val lifecycleRegistry = LifecycleRegistry(this)
@@ -92,14 +93,25 @@ class MainService : AccessibilityService() {
     }
 
     private val prefChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
-        if (key == "persistent_overlay_mode") {
-            if (prefs.getBoolean(key, false)) registerPersistentOverlay() else unregisterPersistentOverlay()
+        when (key) {
+            "persistent_overlay_mode" -> {
+                if (prefs.getBoolean(key, false)) registerPersistentOverlay() else unregisterPersistentOverlay()
+            }
+            "pause_until" -> {
+                val pauseUntil = prefs.getLong("pause_until", 0L)
+                if (pauseUntil > System.currentTimeMillis()) {
+                    countdownOverlay?.show(pauseUntil)
+                } else {
+                    countdownOverlay?.hide()
+                }
+            }
         }
     }
 
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        countdownOverlay = PauseCountdownOverlayManager(this, windowManager)
 
         registerReceiver(screenReceiver, IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
@@ -121,6 +133,8 @@ class MainService : AccessibilityService() {
         super.onServiceConnected()
         val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
         if (prefs.getBoolean("persistent_overlay_mode", false)) registerPersistentOverlay()
+        val pauseUntil = prefs.getLong("pause_until", 0L)
+        if (pauseUntil > System.currentTimeMillis()) countdownOverlay?.show(pauseUntil)
     }
 
     override fun onDestroy() {
@@ -129,6 +143,8 @@ class MainService : AccessibilityService() {
         getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
             .unregisterOnSharedPreferenceChangeListener(prefChangeListener)
         unregisterPersistentOverlay()
+        countdownOverlay?.hide()
+        countdownOverlay = null
         super.onDestroy()
     }
 
