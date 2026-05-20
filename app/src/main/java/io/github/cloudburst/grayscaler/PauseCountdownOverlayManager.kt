@@ -63,7 +63,7 @@ class PauseCountdownOverlayManager(
         cancelOverlayAnimation(view)
         applyShowState()
         if (needsAttach || view.alpha < 1f) {
-            startFadeIn(view)
+            startFadeIn(view, waitForNextFrame = needsAttach)
         }
         view.setRemainingMs(pauseUntilMs - System.currentTimeMillis())
         handler.removeCallbacks(ticker)
@@ -75,7 +75,7 @@ class PauseCountdownOverlayManager(
         handler.removeCallbacks(autoCollapseRunnable)
         isExpanded = false
         val view = pillView ?: return
-        startFadeOut(view)
+        startFadeOut(view, waitForNextFrame = hasNaturallyExpired())
     }
 
     fun onConfigurationChanged() {
@@ -181,31 +181,48 @@ class PauseCountdownOverlayManager(
         autoCollapseEnabled = prefs.getBoolean(AppearancePreferences.KEY_OVERLAY_AUTO_COLLAPSE, true)
     }
 
-    private fun startFadeIn(view: PauseCountdownView) {
-        view.animate()
-            .alpha(1f)
-            .setDuration(OVERLAY_FADE_DURATION_MS)
-            .setListener(null)
-            .start()
+    private fun startFadeIn(view: PauseCountdownView, waitForNextFrame: Boolean) {
+        val animationToken = ++overlayAnimationToken
+        val animateIn = Runnable {
+            if (overlayAnimationToken != animationToken || pillView !== view) return@Runnable
+            view.animate()
+                .alpha(1f)
+                .setDuration(OVERLAY_FADE_DURATION_MS)
+                .setListener(null)
+                .start()
+        }
+        if (waitForNextFrame) {
+            view.post(animateIn)
+        } else {
+            animateIn.run()
+        }
     }
 
-    private fun startFadeOut(view: PauseCountdownView) {
+    private fun startFadeOut(view: PauseCountdownView, waitForNextFrame: Boolean) {
         val animationToken = ++overlayAnimationToken
-        view.animate()
-            .alpha(0f)
-            .setDuration(OVERLAY_FADE_DURATION_MS)
-            .setListener(object : AnimatorListenerAdapter() {
-                override fun onAnimationCancel(animation: Animator) {
-                    view.animate().setListener(null)
-                }
+        val animateOut = Runnable {
+            if (overlayAnimationToken != animationToken || pillView !== view) return@Runnable
+            view.animate()
+                .alpha(0f)
+                .setDuration(OVERLAY_FADE_DURATION_MS)
+                .setListener(object : AnimatorListenerAdapter() {
+                    override fun onAnimationCancel(animation: Animator) {
+                        view.animate().setListener(null)
+                    }
 
-                override fun onAnimationEnd(animation: Animator) {
-                    view.animate().setListener(null)
-                    if (overlayAnimationToken != animationToken || pillView !== view) return
-                    removeOverlayView(view)
-                }
-            })
-            .start()
+                    override fun onAnimationEnd(animation: Animator) {
+                        view.animate().setListener(null)
+                        if (overlayAnimationToken != animationToken || pillView !== view) return
+                        removeOverlayView(view)
+                    }
+                })
+                .start()
+        }
+        if (waitForNextFrame) {
+            view.post(animateOut)
+        } else {
+            animateOut.run()
+        }
     }
 
     private fun cancelOverlayAnimation(view: PauseCountdownView) {
@@ -250,6 +267,15 @@ class PauseCountdownOverlayManager(
 
     private fun updateLayout(params: WindowManager.LayoutParams) {
         pillView?.let { windowManager.updateViewLayout(it, params) }
+    }
+
+    private fun hasNaturallyExpired(): Boolean =
+        pauseUntilMs > 0L && pauseUntilMs <= System.currentTimeMillis()
+
+    private fun remainingMsToDisplaySeconds(remainingMs: Long): Long {
+        if (remainingMs <= 0L) return 0L
+        val wholeSeconds = remainingMs / 1000L
+        return if (remainingMs % 1000L == 0L) wholeSeconds else wholeSeconds + 1L
     }
 
     private fun dp(value: Int): Int =
@@ -395,7 +421,7 @@ class PauseCountdownOverlayManager(
             bgRect.set(0f, 0f, w, h)
             canvas.drawRoundRect(bgRect, radius, radius, bgPaint)
 
-            val totalSeconds = (remainingMs / 1000L).coerceAtLeast(0L)
+            val totalSeconds = remainingMsToDisplaySeconds(remainingMs)
             val icon = appIcon
             val iconDiameter = icon.width.toFloat()
             val iconPadding = dp(4).toFloat()
