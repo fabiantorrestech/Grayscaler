@@ -18,6 +18,9 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -360,6 +363,66 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
                     }
                 )
             }
+
+            HorizontalDivider()
+
+            Text(
+                "Countdown Overlay",
+                style = MaterialTheme.typography.titleSmall,
+                color = sectionColor
+            )
+            Text(
+                "Size of the countdown pill shown during an active pause. Takes effect on the next pause.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OverlaySizeSelector(
+                selected = appearanceSettings.overlaySize,
+                onSelect = { prefs.edit().putString(AppearancePreferences.KEY_OVERLAY_SIZE, it).apply() }
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text("Hide countdown when collapsed", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Shows only the Grayscaler+ logo on the collapsed pill. Expand to see time remaining.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = appearanceSettings.overlayHideCollapsedText,
+                    onCheckedChange = { enabled ->
+                        prefs.edit().putBoolean(AppearancePreferences.KEY_OVERLAY_HIDE_COLLAPSED_TEXT, enabled).apply()
+                    }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun OverlaySizeSelector(
+    selected: String,
+    onSelect: (String) -> Unit,
+) {
+    val options = listOf(
+        AppearancePreferences.OVERLAY_SIZE_SMALL  to "Small",
+        AppearancePreferences.OVERLAY_SIZE_MEDIUM to "Medium",
+        AppearancePreferences.OVERLAY_SIZE_LARGE  to "Large",
+    )
+    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+        options.forEachIndexed { index, (value, label) ->
+            SegmentedButton(
+                shape = SegmentedButtonDefaults.itemShape(index = index, count = options.size),
+                selected = selected == value,
+                onClick = { onSelect(value) },
+                label = { Text(label) }
+            )
         }
     }
 }

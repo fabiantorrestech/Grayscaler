@@ -32,6 +32,8 @@ data class AppearanceSettings(
     val subheaderFontName: String = "",
     val tertiaryFontPath: String = "",
     val tertiaryFontName: String = "",
+    val overlaySize: String = AppearancePreferences.OVERLAY_SIZE_MEDIUM,
+    val overlayHideCollapsedText: Boolean = false,
 )
 
 object AppearancePreferences {
@@ -58,6 +60,13 @@ object AppearancePreferences {
     const val THEME_MODE_LIGHT = "light"
     const val THEME_MODE_DARK = "dark"
 
+    const val KEY_OVERLAY_SIZE = "appearance_overlay_pill_size"
+    const val OVERLAY_SIZE_SMALL  = "small"
+    const val OVERLAY_SIZE_MEDIUM = "medium"
+    const val OVERLAY_SIZE_LARGE  = "large"
+
+    const val KEY_OVERLAY_HIDE_COLLAPSED_TEXT = "appearance_overlay_hide_collapsed_text"
+
     fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -80,6 +89,8 @@ object AppearancePreferences {
             subheaderFontName = prefs.getString(KEY_SUBHEADER_FONT_NAME, "") ?: "",
             tertiaryFontPath = prefs.getString(KEY_TERTIARY_FONT_PATH, "") ?: "",
             tertiaryFontName = prefs.getString(KEY_TERTIARY_FONT_NAME, "") ?: "",
+            overlaySize = prefs.getString(KEY_OVERLAY_SIZE, OVERLAY_SIZE_MEDIUM) ?: OVERLAY_SIZE_MEDIUM,
+            overlayHideCollapsedText = prefs.getBoolean(KEY_OVERLAY_HIDE_COLLAPSED_TEXT, false),
         )
     }
 

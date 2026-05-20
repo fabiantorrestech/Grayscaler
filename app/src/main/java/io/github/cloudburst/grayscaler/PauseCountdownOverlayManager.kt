@@ -2,9 +2,11 @@ package io.github.cloudburst.grayscaler
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.os.Handler
@@ -15,7 +17,6 @@ import android.view.View
 import android.view.WindowManager
 import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 
 class PauseCountdownOverlayManager(
     private val context: Context,
@@ -24,6 +25,14 @@ class PauseCountdownOverlayManager(
     private var pillView: PauseCountdownView? = null
     private var layoutParams: WindowManager.LayoutParams? = null
     private var pauseUntilMs: Long = 0L
+    private var snappedLeft: Boolean = false
+    private var isExpanded: Boolean = false
+
+    // Size fields — set from prefs in createOverlay(), default = medium
+    private var pillSizeDp: Int = 36
+    private var pillExpandedWidthDp: Int = 160
+    private var textSizeSp: Int = 14
+    private var hideCollapsedText: Boolean = false
 
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
@@ -48,6 +57,7 @@ class PauseCountdownOverlayManager(
 
     fun hide() {
         handler.removeCallbacks(ticker)
+        isExpanded = false
         pillView?.let {
             try { windowManager.removeView(it) } catch (_: IllegalArgumentException) {}
         }
@@ -55,17 +65,35 @@ class PauseCountdownOverlayManager(
         layoutParams = null
     }
 
-    private fun createOverlay() {
-        val pillWidthPx = dp(PILL_WIDTH_DP)
-        val pillHeightPx = dp(PILL_HEIGHT_DP)
-        val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+    fun onConfigurationChanged() {
+        val params = layoutParams ?: return
         val metrics = context.resources.displayMetrics
-        val savedX = prefs.getInt(PREF_X, Int.MIN_VALUE)
-        val savedY = prefs.getInt(PREF_Y, Int.MIN_VALUE)
-        val snappedLeft = prefs.getBoolean(PREF_SNAPPED_LEFT, false)
+        val maxX = max(0, metrics.widthPixels - params.width)
+        params.x = if (snappedLeft) 0 else maxX
+        params.y = params.y.coerceIn(0, max(0, metrics.heightPixels - params.height))
+        updateLayout(params)
+    }
+
+    private fun createOverlay() {
+        val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+
+        val overlaySize = prefs.getString(AppearancePreferences.KEY_OVERLAY_SIZE,
+            AppearancePreferences.OVERLAY_SIZE_MEDIUM) ?: AppearancePreferences.OVERLAY_SIZE_MEDIUM
+        pillSizeDp          = when (overlaySize) { "small" -> 28; "large" -> 48; else -> 36 }
+        pillExpandedWidthDp = when (overlaySize) { "small" -> 120; "large" -> 200; else -> 160 }
+        textSizeSp          = when (overlaySize) { "small" -> 12; "large" -> 17; else -> 14 }
+        hideCollapsedText   = prefs.getBoolean(AppearancePreferences.KEY_OVERLAY_HIDE_COLLAPSED_TEXT, false)
+
+        val pillHeightPx = dp(pillSizeDp)
+        val collapsedWidthPx = pillHeightPx
+        val metrics = context.resources.displayMetrics
+        val hasPosition = prefs.getBoolean(PREF_HAS_POSITION, false)
+        val savedY = prefs.getInt(PREF_Y, 0)
+        snappedLeft = prefs.getBoolean(PREF_SNAPPED_LEFT, false)
+        isExpanded = false
 
         val params = WindowManager.LayoutParams(
-            pillWidthPx,
+            collapsedWidthPx,
             pillHeightPx,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
@@ -73,31 +101,60 @@ class PauseCountdownOverlayManager(
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            if (savedX != Int.MIN_VALUE) {
-                x = if (snappedLeft) 0 else max(0, metrics.widthPixels - pillWidthPx)
+            if (hasPosition) {
+                x = if (snappedLeft) 0 else max(0, metrics.widthPixels - collapsedWidthPx)
                 y = savedY.coerceIn(0, max(0, metrics.heightPixels - pillHeightPx))
             } else {
-                x = max(0, metrics.widthPixels - pillWidthPx - dp(24))
+                x = max(0, metrics.widthPixels - collapsedWidthPx - dp(24))
                 y = max(dp(32), metrics.heightPixels / 3)
             }
         }
 
-        val view = PauseCountdownView(context)
+        val view = PauseCountdownView(context).apply {
+            setSnappedLeft(snappedLeft)
+            setExpanded(false)
+        }
         view.setOnTouchListener(PillTouchListener())
         windowManager.addView(view, params)
         pillView = view
         layoutParams = params
     }
 
+    private fun toggleExpanded() {
+        isExpanded = !isExpanded
+        val params = layoutParams ?: return
+        val metrics = context.resources.displayMetrics
+        val pillHeightPx = dp(pillSizeDp)
+        val newWidth = if (isExpanded) dp(pillExpandedWidthDp) else pillHeightPx
+        params.width = newWidth
+        if (!snappedLeft) params.x = max(0, metrics.widthPixels - newWidth)
+        pillView?.setExpanded(isExpanded)
+        updateLayout(params)
+    }
+
+    private fun collapseOverlay() {
+        if (!isExpanded) return
+        isExpanded = false
+        val params = layoutParams ?: return
+        val metrics = context.resources.displayMetrics
+        val pillHeightPx = dp(pillSizeDp)
+        params.width = pillHeightPx
+        if (!snappedLeft) params.x = max(0, metrics.widthPixels - pillHeightPx)
+        pillView?.setExpanded(false)
+        updateLayout(params)
+    }
+
     private fun snapToEdge() {
         val params = layoutParams ?: return
         val metrics = context.resources.displayMetrics
         val maxX = max(0, metrics.widthPixels - params.width)
-        val snappedLeft = (params.x + params.width / 2) < metrics.widthPixels / 2
+        snappedLeft = (params.x + params.width / 2) < metrics.widthPixels / 2
         params.x = if (snappedLeft) 0 else maxX
         params.y = params.y.coerceIn(0, max(0, metrics.heightPixels - params.height))
         updateLayout(params)
+        pillView?.setSnappedLeft(snappedLeft)
         context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE).edit()
+            .putBoolean(PREF_HAS_POSITION, true)
             .putBoolean(PREF_SNAPPED_LEFT, snappedLeft)
             .putInt(PREF_Y, params.y)
             .apply()
@@ -116,6 +173,15 @@ class PauseCountdownOverlayManager(
         private var lastRawX = 0f
         private var lastRawY = 0f
         private var dragStarted = false
+        private var longPressFired = false
+
+        private val longPressRunnable = Runnable {
+            longPressFired = true
+            collapseOverlay()
+            context.sendBroadcast(Intent(ScheduleReceiver.ACTION_PAUSE_GRAYSCALER).apply {
+                setPackage(context.packageName)
+            })
+        }
 
         override fun onTouch(v: View, event: MotionEvent): Boolean {
             val params = layoutParams ?: return false
@@ -126,6 +192,9 @@ class PauseCountdownOverlayManager(
                     lastRawX = event.rawX
                     lastRawY = event.rawY
                     dragStarted = false
+                    longPressFired = false
+                    handler.removeCallbacks(longPressRunnable)
+                    handler.postDelayed(longPressRunnable, LONG_PRESS_MS)
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -139,6 +208,7 @@ class PauseCountdownOverlayManager(
                     val totalDy = (params.y - initialY).toFloat()
                     if (!dragStarted && (abs(totalDx) > dp(DRAG_SLOP_DP) || abs(totalDy) > dp(DRAG_SLOP_DP))) {
                         dragStarted = true
+                        handler.removeCallbacks(longPressRunnable)
                     }
                     val metrics = context.resources.displayMetrics
                     params.x = params.x.coerceIn(0, max(0, metrics.widthPixels - params.width))
@@ -147,13 +217,12 @@ class PauseCountdownOverlayManager(
                     return true
                 }
                 MotionEvent.ACTION_UP -> {
+                    handler.removeCallbacks(longPressRunnable)
                     if (!dragStarted) {
                         params.x = initialX
                         params.y = initialY
                         updateLayout(params)
-                        context.sendBroadcast(Intent(ScheduleReceiver.ACTION_PAUSE_GRAYSCALER).apply {
-                            setPackage(context.packageName)
-                        })
+                        if (!longPressFired) toggleExpanded()
                     } else {
                         snapToEdge()
                     }
@@ -161,6 +230,7 @@ class PauseCountdownOverlayManager(
                     return true
                 }
                 MotionEvent.ACTION_CANCEL -> {
+                    handler.removeCallbacks(longPressRunnable)
                     params.x = initialX
                     params.y = initialY
                     val metrics = context.resources.displayMetrics
@@ -177,6 +247,18 @@ class PauseCountdownOverlayManager(
 
     private inner class PauseCountdownView(context: Context) : View(context) {
         private var remainingMs: Long = 0L
+        private var isSnappedLeft: Boolean = false
+        private var isExpanded: Boolean = false
+
+        private val appIcon: Bitmap by lazy {
+            val sizePx = dp(pillSizeDp - 8)
+            val drawable = context.getDrawable(R.drawable.ic_qs_tile_white)!!
+            val bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+            val bmpCanvas = Canvas(bmp)
+            drawable.setBounds(0, 0, sizePx, sizePx)
+            drawable.draw(bmpCanvas)
+            bmp
+        }
 
         private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor("#CC111111")
@@ -187,13 +269,30 @@ class PauseCountdownOverlayManager(
             color = Color.WHITE
             textAlign = Paint.Align.CENTER
             isFakeBoldText = true
-            textSize = dp(TEXT_SIZE_SP).toFloat()
+            textSize = dp(textSizeSp).toFloat()
+        }
+
+        private val outlinePaint = Paint(textPaint).apply {
+            color = Color.BLACK
+            style = Paint.Style.STROKE
+            strokeWidth = dp(2).toFloat()
         }
 
         private val bgRect = RectF()
+        private val clipPath = Path()
 
         fun setRemainingMs(ms: Long) {
             remainingMs = ms.coerceAtLeast(0L)
+            invalidate()
+        }
+
+        fun setSnappedLeft(left: Boolean) {
+            isSnappedLeft = left
+            invalidate()
+        }
+
+        fun setExpanded(expanded: Boolean) {
+            isExpanded = expanded
             invalidate()
         }
 
@@ -201,28 +300,72 @@ class PauseCountdownOverlayManager(
             val w = width.toFloat()
             val h = height.toFloat()
             val radius = h / 2f
+
             bgRect.set(0f, 0f, w, h)
             canvas.drawRoundRect(bgRect, radius, radius, bgPaint)
 
             val totalSeconds = (remainingMs / 1000L).coerceAtLeast(0L)
-            val minutes = totalSeconds / 60L
-            val seconds = totalSeconds % 60L
-            val text = String.format("%02d:%02d", minutes, seconds)
+            val icon = appIcon
+            val iconDiameter = icon.width.toFloat()
+            val iconPadding = dp(4).toFloat()
+            val iconTop = (h - iconDiameter) / 2f
 
-            val baseline = h / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
-            canvas.drawText(text, w / 2f, baseline, textPaint)
+            if (!isExpanded) {
+                // Collapsed: icon centered in circle, time label overlaid
+                val iconLeft = (w - iconDiameter) / 2f
+                clipPath.reset()
+                clipPath.addCircle(w / 2f, h / 2f, radius - 1f, Path.Direction.CW)
+                canvas.save()
+                canvas.clipPath(clipPath)
+                canvas.drawBitmap(icon, iconLeft, iconTop, null)
+                canvas.restore()
+
+                if (!hideCollapsedText) {
+                    val label = when {
+                        totalSeconds >= 3600L -> "${totalSeconds / 3600L}h"
+                        totalSeconds >= 60L   -> "${totalSeconds / 60L}m"
+                        else                  -> "${totalSeconds}s"
+                    }
+                    val baseline = h / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
+                    canvas.drawText(label, w / 2f, baseline, outlinePaint)
+                    canvas.drawText(label, w / 2f, baseline, textPaint)
+                }
+            } else {
+                // Expanded: icon circle on the snapped edge side, time text in remaining space
+                val iconLeft = if (isSnappedLeft) iconPadding else w - iconDiameter - iconPadding
+                val iconCenterX = iconLeft + iconDiameter / 2f
+
+                clipPath.reset()
+                clipPath.addCircle(iconCenterX, h / 2f, iconDiameter / 2f - 1f, Path.Direction.CW)
+                canvas.save()
+                canvas.clipPath(clipPath)
+                canvas.drawBitmap(icon, iconLeft, iconTop, null)
+                canvas.restore()
+
+                val text = when {
+                    totalSeconds >= 3600L -> "${totalSeconds / 3600L}h"
+                    else -> String.format("%02d:%02d", totalSeconds / 60L, totalSeconds % 60L)
+                }
+
+                val textCenterX = if (isSnappedLeft) {
+                    (iconPadding + iconDiameter + iconPadding + w) / 2f
+                } else {
+                    (iconLeft - iconPadding) / 2f
+                }
+                val baseline = h / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
+                canvas.drawText(text, textCenterX, baseline, outlinePaint)
+                canvas.drawText(text, textCenterX, baseline, textPaint)
+            }
         }
     }
 
     companion object {
-        private const val PILL_WIDTH_DP = 80
-        private const val PILL_HEIGHT_DP = 36
-        private const val TEXT_SIZE_SP = 14
         private const val TICK_INTERVAL_MS = 500L
-        private const val DRAG_SLOP_DP = 12
+        private const val DRAG_SLOP_DP    = 12
+        private const val LONG_PRESS_MS   = 500L
 
-        private const val PREF_X = "countdown_pill_x"
-        private const val PREF_Y = "countdown_pill_y"
+        private const val PREF_Y           = "countdown_pill_y"
         private const val PREF_SNAPPED_LEFT = "countdown_pill_snapped_left"
+        private const val PREF_HAS_POSITION = "countdown_pill_has_pos"
     }
 }

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.net.Uri
 import android.os.Build
@@ -381,6 +382,11 @@ class MainService : AccessibilityService() {
             if (result != null) return result
         }
         return null
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        countdownOverlay?.onConfigurationChanged()
     }
 
     override fun onInterrupt() {
