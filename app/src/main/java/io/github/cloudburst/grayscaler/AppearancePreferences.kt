@@ -36,6 +36,7 @@ data class AppearanceSettings(
     val overlayHideCollapsedText: Boolean = false,
     val overlayStartExpanded: Boolean = true,
     val overlayAutoCollapse: Boolean = true,
+    val overlayShowAboveLockscreenSystem: Boolean = false,
 )
 
 object AppearancePreferences {
@@ -70,6 +71,8 @@ object AppearancePreferences {
     const val KEY_OVERLAY_HIDE_COLLAPSED_TEXT = "appearance_overlay_hide_collapsed_text"
     const val KEY_OVERLAY_START_EXPANDED = "appearance_overlay_start_expanded"
     const val KEY_OVERLAY_AUTO_COLLAPSE = "appearance_overlay_auto_collapse"
+    const val KEY_OVERLAY_SHOW_ABOVE_LOCKSCREEN_SYSTEM =
+        "appearance_overlay_show_above_lockscreen_system"
 
     fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -97,6 +100,8 @@ object AppearancePreferences {
             overlayHideCollapsedText = prefs.getBoolean(KEY_OVERLAY_HIDE_COLLAPSED_TEXT, false),
             overlayStartExpanded = prefs.getBoolean(KEY_OVERLAY_START_EXPANDED, true),
             overlayAutoCollapse = prefs.getBoolean(KEY_OVERLAY_AUTO_COLLAPSE, true),
+            overlayShowAboveLockscreenSystem =
+                prefs.getBoolean(KEY_OVERLAY_SHOW_ABOVE_LOCKSCREEN_SYSTEM, false),
         )
     }
 

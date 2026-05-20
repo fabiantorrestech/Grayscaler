@@ -1,5 +1,7 @@
 package io.github.cloudburst.grayscaler
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -35,6 +37,8 @@ class PauseCountdownOverlayManager(
     private var hideCollapsedText: Boolean = false
     private var startExpandedByDefault: Boolean = true
     private var autoCollapseEnabled: Boolean = true
+    private var showAboveLockscreenSystem: Boolean = false
+    private var overlayAnimationToken: Long = 0L
 
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
@@ -53,9 +57,15 @@ class PauseCountdownOverlayManager(
     fun show(pauseUntilMs: Long) {
         this.pauseUntilMs = pauseUntilMs
         loadBehaviorPrefs()
-        if (pillView == null) createOverlay()
+        val needsAttach = pillView == null
+        if (needsAttach) createOverlay()
+        val view = pillView ?: return
+        cancelOverlayAnimation(view)
         applyShowState()
-        pillView?.setRemainingMs(pauseUntilMs - System.currentTimeMillis())
+        if (needsAttach || view.alpha < 1f) {
+            startFadeIn(view)
+        }
+        view.setRemainingMs(pauseUntilMs - System.currentTimeMillis())
         handler.removeCallbacks(ticker)
         handler.postDelayed(ticker, TICK_INTERVAL_MS)
     }
@@ -64,11 +74,8 @@ class PauseCountdownOverlayManager(
         handler.removeCallbacks(ticker)
         handler.removeCallbacks(autoCollapseRunnable)
         isExpanded = false
-        pillView?.let {
-            try { windowManager.removeView(it) } catch (_: IllegalArgumentException) {}
-        }
-        pillView = null
-        layoutParams = null
+        val view = pillView ?: return
+        startFadeOut(view)
     }
 
     fun onConfigurationChanged() {
@@ -91,6 +98,10 @@ class PauseCountdownOverlayManager(
         hideCollapsedText   = prefs.getBoolean(AppearancePreferences.KEY_OVERLAY_HIDE_COLLAPSED_TEXT, false)
         startExpandedByDefault = prefs.getBoolean(AppearancePreferences.KEY_OVERLAY_START_EXPANDED, true)
         autoCollapseEnabled = prefs.getBoolean(AppearancePreferences.KEY_OVERLAY_AUTO_COLLAPSE, true)
+        showAboveLockscreenSystem = prefs.getBoolean(
+            AppearancePreferences.KEY_OVERLAY_SHOW_ABOVE_LOCKSCREEN_SYSTEM,
+            false
+        )
 
         val pillHeightPx = dp(pillSizeDp)
         val collapsedWidthPx = pillHeightPx
@@ -102,12 +113,15 @@ class PauseCountdownOverlayManager(
         snappedLeft = prefs.getBoolean(PREF_SNAPPED_LEFT, false)
         isExpanded = initialExpanded
 
+        val windowFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+            if (showAboveLockscreenSystem) WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED else 0
+
         val params = WindowManager.LayoutParams(
             initialWidthPx,
             pillHeightPx,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            windowFlags,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -121,6 +135,7 @@ class PauseCountdownOverlayManager(
         }
 
         val view = PauseCountdownView(context).apply {
+            alpha = 0f
             setSnappedLeft(snappedLeft)
             setExpanded(initialExpanded)
         }
@@ -164,6 +179,50 @@ class PauseCountdownOverlayManager(
         val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
         startExpandedByDefault = prefs.getBoolean(AppearancePreferences.KEY_OVERLAY_START_EXPANDED, true)
         autoCollapseEnabled = prefs.getBoolean(AppearancePreferences.KEY_OVERLAY_AUTO_COLLAPSE, true)
+    }
+
+    private fun startFadeIn(view: PauseCountdownView) {
+        view.animate()
+            .alpha(1f)
+            .setDuration(OVERLAY_FADE_DURATION_MS)
+            .setListener(null)
+            .start()
+    }
+
+    private fun startFadeOut(view: PauseCountdownView) {
+        val animationToken = ++overlayAnimationToken
+        view.animate()
+            .alpha(0f)
+            .setDuration(OVERLAY_FADE_DURATION_MS)
+            .setListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationCancel(animation: Animator) {
+                    view.animate().setListener(null)
+                }
+
+                override fun onAnimationEnd(animation: Animator) {
+                    view.animate().setListener(null)
+                    if (overlayAnimationToken != animationToken || pillView !== view) return
+                    removeOverlayView(view)
+                }
+            })
+            .start()
+    }
+
+    private fun cancelOverlayAnimation(view: PauseCountdownView) {
+        overlayAnimationToken++
+        view.animate().setListener(null)
+        view.animate().cancel()
+    }
+
+    private fun removeOverlayView(view: PauseCountdownView) {
+        try {
+            windowManager.removeView(view)
+        } catch (_: IllegalArgumentException) {
+        }
+        if (pillView === view) {
+            pillView = null
+            layoutParams = null
+        }
     }
 
     private fun scheduleAutoCollapseIfNeeded() {
@@ -394,6 +453,7 @@ class PauseCountdownOverlayManager(
     companion object {
         private const val TICK_INTERVAL_MS = 500L
         private const val AUTO_COLLAPSE_DELAY_MS = 3000L
+        private const val OVERLAY_FADE_DURATION_MS = 180L
         private const val DRAG_SLOP_DP    = 12
         private const val LONG_PRESS_MS   = 500L
 

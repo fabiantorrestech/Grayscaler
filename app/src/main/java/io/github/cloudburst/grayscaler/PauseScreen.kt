@@ -440,6 +440,31 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
                     }
                 )
             }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text("Show above lock screen/system apps", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Allows the countdown pill to appear over lock screen and system surfaces. Does not wake the display. Takes effect on the next pause.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = appearanceSettings.overlayShowAboveLockscreenSystem,
+                    onCheckedChange = { enabled ->
+                        prefs.edit()
+                            .putBoolean(
+                                AppearancePreferences.KEY_OVERLAY_SHOW_ABOVE_LOCKSCREEN_SYSTEM,
+                                enabled
+                            )
+                            .apply()
+                    }
+                )
+            }
         }
     }
 }
