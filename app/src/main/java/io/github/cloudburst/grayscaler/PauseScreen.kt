@@ -400,6 +400,46 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
                     }
                 )
             }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text("Start expanded", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Shows the full countdown pill immediately when a pause begins.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = appearanceSettings.overlayStartExpanded,
+                    onCheckedChange = { enabled ->
+                        prefs.edit().putBoolean(AppearancePreferences.KEY_OVERLAY_START_EXPANDED, enabled).apply()
+                    }
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text("Auto-collapse expanded overlay", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "If untouched, shrinks back to the icon-only pill after 3 seconds.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = appearanceSettings.overlayAutoCollapse,
+                    onCheckedChange = { enabled ->
+                        prefs.edit().putBoolean(AppearancePreferences.KEY_OVERLAY_AUTO_COLLAPSE, enabled).apply()
+                    }
+                )
+            }
         }
     }
 }

@@ -33,6 +33,8 @@ class PauseCountdownOverlayManager(
     private var pillExpandedWidthDp: Int = 160
     private var textSizeSp: Int = 14
     private var hideCollapsedText: Boolean = false
+    private var startExpandedByDefault: Boolean = true
+    private var autoCollapseEnabled: Boolean = true
 
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
@@ -46,10 +48,13 @@ class PauseCountdownOverlayManager(
             handler.postDelayed(this, TICK_INTERVAL_MS)
         }
     }
+    private val autoCollapseRunnable = Runnable { collapseOverlay() }
 
     fun show(pauseUntilMs: Long) {
         this.pauseUntilMs = pauseUntilMs
+        loadBehaviorPrefs()
         if (pillView == null) createOverlay()
+        applyShowState()
         pillView?.setRemainingMs(pauseUntilMs - System.currentTimeMillis())
         handler.removeCallbacks(ticker)
         handler.postDelayed(ticker, TICK_INTERVAL_MS)
@@ -57,6 +62,7 @@ class PauseCountdownOverlayManager(
 
     fun hide() {
         handler.removeCallbacks(ticker)
+        handler.removeCallbacks(autoCollapseRunnable)
         isExpanded = false
         pillView?.let {
             try { windowManager.removeView(it) } catch (_: IllegalArgumentException) {}
@@ -83,17 +89,21 @@ class PauseCountdownOverlayManager(
         pillExpandedWidthDp = when (overlaySize) { "small" -> 120; "large" -> 200; else -> 160 }
         textSizeSp          = when (overlaySize) { "small" -> 12; "large" -> 17; else -> 14 }
         hideCollapsedText   = prefs.getBoolean(AppearancePreferences.KEY_OVERLAY_HIDE_COLLAPSED_TEXT, false)
+        startExpandedByDefault = prefs.getBoolean(AppearancePreferences.KEY_OVERLAY_START_EXPANDED, true)
+        autoCollapseEnabled = prefs.getBoolean(AppearancePreferences.KEY_OVERLAY_AUTO_COLLAPSE, true)
 
         val pillHeightPx = dp(pillSizeDp)
         val collapsedWidthPx = pillHeightPx
+        val initialExpanded = startExpandedByDefault
+        val initialWidthPx = if (initialExpanded) dp(pillExpandedWidthDp) else collapsedWidthPx
         val metrics = context.resources.displayMetrics
         val hasPosition = prefs.getBoolean(PREF_HAS_POSITION, false)
         val savedY = prefs.getInt(PREF_Y, 0)
         snappedLeft = prefs.getBoolean(PREF_SNAPPED_LEFT, false)
-        isExpanded = false
+        isExpanded = initialExpanded
 
         val params = WindowManager.LayoutParams(
-            collapsedWidthPx,
+            initialWidthPx,
             pillHeightPx,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
@@ -112,7 +122,7 @@ class PauseCountdownOverlayManager(
 
         val view = PauseCountdownView(context).apply {
             setSnappedLeft(snappedLeft)
-            setExpanded(false)
+            setExpanded(initialExpanded)
         }
         view.setOnTouchListener(PillTouchListener())
         windowManager.addView(view, params)
@@ -121,27 +131,46 @@ class PauseCountdownOverlayManager(
     }
 
     private fun toggleExpanded() {
-        isExpanded = !isExpanded
-        val params = layoutParams ?: return
-        val metrics = context.resources.displayMetrics
-        val pillHeightPx = dp(pillSizeDp)
-        val newWidth = if (isExpanded) dp(pillExpandedWidthDp) else pillHeightPx
-        params.width = newWidth
-        if (!snappedLeft) params.x = max(0, metrics.widthPixels - newWidth)
-        pillView?.setExpanded(isExpanded)
-        updateLayout(params)
+        setExpanded(!isExpanded)
     }
 
     private fun collapseOverlay() {
         if (!isExpanded) return
-        isExpanded = false
+        setExpanded(false)
+    }
+
+    private fun setExpanded(expanded: Boolean) {
+        isExpanded = expanded
         val params = layoutParams ?: return
         val metrics = context.resources.displayMetrics
         val pillHeightPx = dp(pillSizeDp)
-        params.width = pillHeightPx
-        if (!snappedLeft) params.x = max(0, metrics.widthPixels - pillHeightPx)
-        pillView?.setExpanded(false)
+        val newWidth = if (expanded) dp(pillExpandedWidthDp) else pillHeightPx
+        params.width = newWidth
+        if (!snappedLeft) params.x = max(0, metrics.widthPixels - newWidth)
+        pillView?.setExpanded(expanded)
         updateLayout(params)
+        scheduleAutoCollapseIfNeeded()
+    }
+
+    private fun applyShowState() {
+        if (startExpandedByDefault) {
+            setExpanded(true)
+        } else {
+            setExpanded(false)
+        }
+    }
+
+    private fun loadBehaviorPrefs() {
+        val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+        startExpandedByDefault = prefs.getBoolean(AppearancePreferences.KEY_OVERLAY_START_EXPANDED, true)
+        autoCollapseEnabled = prefs.getBoolean(AppearancePreferences.KEY_OVERLAY_AUTO_COLLAPSE, true)
+    }
+
+    private fun scheduleAutoCollapseIfNeeded() {
+        handler.removeCallbacks(autoCollapseRunnable)
+        if (isExpanded && autoCollapseEnabled) {
+            handler.postDelayed(autoCollapseRunnable, AUTO_COLLAPSE_DELAY_MS)
+        }
     }
 
     private fun snapToEdge() {
@@ -194,6 +223,7 @@ class PauseCountdownOverlayManager(
                     dragStarted = false
                     longPressFired = false
                     handler.removeCallbacks(longPressRunnable)
+                    handler.removeCallbacks(autoCollapseRunnable)
                     handler.postDelayed(longPressRunnable, LONG_PRESS_MS)
                     return true
                 }
@@ -226,6 +256,7 @@ class PauseCountdownOverlayManager(
                     } else {
                         snapToEdge()
                     }
+                    scheduleAutoCollapseIfNeeded()
                     dragStarted = false
                     return true
                 }
@@ -237,6 +268,7 @@ class PauseCountdownOverlayManager(
                     params.x = params.x.coerceIn(0, max(0, metrics.widthPixels - params.width))
                     params.y = params.y.coerceIn(0, max(0, metrics.heightPixels - params.height))
                     updateLayout(params)
+                    scheduleAutoCollapseIfNeeded()
                     dragStarted = false
                     return true
                 }
@@ -361,6 +393,7 @@ class PauseCountdownOverlayManager(
 
     companion object {
         private const val TICK_INTERVAL_MS = 500L
+        private const val AUTO_COLLAPSE_DELAY_MS = 3000L
         private const val DRAG_SLOP_DP    = 12
         private const val LONG_PRESS_MS   = 500L
 

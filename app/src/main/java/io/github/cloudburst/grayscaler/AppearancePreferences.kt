@@ -34,6 +34,8 @@ data class AppearanceSettings(
     val tertiaryFontName: String = "",
     val overlaySize: String = AppearancePreferences.OVERLAY_SIZE_MEDIUM,
     val overlayHideCollapsedText: Boolean = false,
+    val overlayStartExpanded: Boolean = true,
+    val overlayAutoCollapse: Boolean = true,
 )
 
 object AppearancePreferences {
@@ -66,6 +68,8 @@ object AppearancePreferences {
     const val OVERLAY_SIZE_LARGE  = "large"
 
     const val KEY_OVERLAY_HIDE_COLLAPSED_TEXT = "appearance_overlay_hide_collapsed_text"
+    const val KEY_OVERLAY_START_EXPANDED = "appearance_overlay_start_expanded"
+    const val KEY_OVERLAY_AUTO_COLLAPSE = "appearance_overlay_auto_collapse"
 
     fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -91,6 +95,8 @@ object AppearancePreferences {
             tertiaryFontName = prefs.getString(KEY_TERTIARY_FONT_NAME, "") ?: "",
             overlaySize = prefs.getString(KEY_OVERLAY_SIZE, OVERLAY_SIZE_MEDIUM) ?: OVERLAY_SIZE_MEDIUM,
             overlayHideCollapsedText = prefs.getBoolean(KEY_OVERLAY_HIDE_COLLAPSED_TEXT, false),
+            overlayStartExpanded = prefs.getBoolean(KEY_OVERLAY_START_EXPANDED, true),
+            overlayAutoCollapse = prefs.getBoolean(KEY_OVERLAY_AUTO_COLLAPSE, true),
         )
     }
 
