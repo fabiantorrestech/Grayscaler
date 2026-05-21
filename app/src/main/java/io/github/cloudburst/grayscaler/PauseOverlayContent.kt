@@ -3,6 +3,8 @@ package io.github.cloudburst.grayscaler
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
+import android.graphics.Shader
+import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -46,182 +48,349 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+const val PREF_PAUSE_OVERLAY_BLUR_ANIMATION_ENABLED = "pause_overlay_blur_animation_enabled"
+
+private const val PAUSE_OVERLAY_SCRIM_ALPHA = 0.52f
+private const val PAUSE_OVERLAY_CARD_MIN_SCALE = 0.94f
+private val PauseOverlayAnimationSpec = tween<Float>(
+    durationMillis = 220,
+    easing = FastOutSlowInEasing
+)
+
+private enum class PauseOverlayExitAction {
+    Dismiss,
+    OpenApp
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PauseOverlayContent(
+    presentationKey: Any = Unit,
     onDismiss: () -> Unit,
     onOpenApp: () -> Unit
 ) {
     val context = LocalContext.current
     val prefs = remember { GrayscalerToggleCoordinator.prefs(context) }
-
-    var grayscalerEnabled by remember { mutableStateOf(GrayscalerToggleCoordinator.isEnabled(context)) }
-    var lastDecision by remember { mutableStateOf(GrayscaleStateManager.lastDecision) }
-    var pauseUntil by remember { mutableStateOf(prefs.getLong("pause_until", 0L)) }
-    var now by remember { mutableStateOf(System.currentTimeMillis()) }
-    var customValue by remember { mutableStateOf("") }
-    var unitExpanded by remember { mutableStateOf(false) }
-    var selectedUnit by remember { mutableStateOf("Minutes") }
-    var confirmingPauseSeconds by remember { mutableStateOf<Long?>(null) }
-    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-
-    LaunchedEffect(pauseUntil) {
-        while (pauseUntil > System.currentTimeMillis()) {
-            delay(1000L)
-            now = System.currentTimeMillis()
+    key(presentationKey) {
+        val animationsEnabled = remember {
+            prefs.getBoolean(PREF_PAUSE_OVERLAY_BLUR_ANIMATION_ENABLED, true)
         }
-    }
+        var grayscalerEnabled by remember { mutableStateOf(GrayscalerToggleCoordinator.isEnabled(context)) }
+        var lastDecision by remember { mutableStateOf(GrayscaleStateManager.lastDecision) }
+        var pauseUntil by remember { mutableStateOf(prefs.getLong("pause_until", 0L)) }
+        var now by remember { mutableStateOf(System.currentTimeMillis()) }
+        var customValue by remember { mutableStateOf("") }
+        var unitExpanded by remember { mutableStateOf(false) }
+        var selectedUnit by remember { mutableStateOf("Minutes") }
+        var confirmingPauseSeconds by remember { mutableStateOf<Long?>(null) }
+        var isClosing by remember { mutableStateOf(false) }
+        val scope = rememberCoroutineScope()
+        val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val blurAnimationSupported = animationsEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+        val maxBlurRadiusPx = with(LocalDensity.current) { 18.dp.toPx() }
+        val visibilityProgress = remember(animationsEnabled) {
+            Animatable(if (animationsEnabled) 0f else 1f)
+        }
 
-    DisposableEffect(prefs) {
-        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            when (key) {
-                GrayscalerToggleCoordinator.KEY_ENABLED -> {
-                    grayscalerEnabled = GrayscalerToggleCoordinator.isEnabled(context)
-                    lastDecision = GrayscaleStateManager.lastDecision
+        LaunchedEffect(animationsEnabled) {
+            if (animationsEnabled) {
+                visibilityProgress.snapTo(0f)
+                visibilityProgress.animateTo(1f, PauseOverlayAnimationSpec)
+            } else {
+                visibilityProgress.snapTo(1f)
+            }
+        }
+
+        LaunchedEffect(pauseUntil) {
+            while (pauseUntil > System.currentTimeMillis()) {
+                delay(1000L)
+                now = System.currentTimeMillis()
+            }
+        }
+
+        DisposableEffect(prefs) {
+            val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                when (key) {
+                    GrayscalerToggleCoordinator.KEY_ENABLED -> {
+                        grayscalerEnabled = GrayscalerToggleCoordinator.isEnabled(context)
+                        lastDecision = GrayscaleStateManager.lastDecision
+                    }
+                    "pause_until" -> {
+                        pauseUntil = prefs.getLong("pause_until", 0L)
+                        now = System.currentTimeMillis()
+                    }
                 }
-                "pause_until" -> {
-                    pauseUntil = prefs.getLong("pause_until", 0L)
-                    now = System.currentTimeMillis()
+            }
+            prefs.registerOnSharedPreferenceChangeListener(listener)
+            onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+        }
+
+        fun finishDismiss(action: PauseOverlayExitAction) {
+            when (action) {
+                PauseOverlayExitAction.Dismiss -> onDismiss()
+                PauseOverlayExitAction.OpenApp -> onOpenApp()
+            }
+        }
+
+        fun dismissAfter(
+            action: PauseOverlayExitAction = PauseOverlayExitAction.Dismiss,
+            beforeDismiss: () -> Unit = {}
+        ) {
+            if (isClosing) return
+            isClosing = true
+            beforeDismiss()
+            if (!animationsEnabled) {
+                finishDismiss(action)
+                return
+            }
+            scope.launch {
+                visibilityProgress.animateTo(0f, PauseOverlayAnimationSpec)
+                finishDismiss(action)
+            }
+        }
+
+        fun applyPause(seconds: Long) {
+            context.sendBroadcast(Intent(ScheduleReceiver.ACTION_APPLY_PAUSE).apply {
+                setPackage(context.packageName)
+                putExtra(ScheduleReceiver.EXTRA_SECONDS, seconds)
+            })
+        }
+
+        fun cancelPause() {
+            context.sendBroadcast(Intent(ScheduleReceiver.ACTION_PAUSE_END).apply {
+                setPackage(context.packageName)
+            })
+        }
+
+        val applyPauseOrConfirm: (Long) -> Unit = { seconds ->
+            val activePauseUntil = prefs.getLong("pause_until", 0L)
+            if (activePauseUntil > System.currentTimeMillis()) {
+                confirmingPauseSeconds = seconds
+            } else {
+                dismissAfter {
+                    applyPause(seconds)
                 }
             }
         }
-        prefs.registerOnSharedPreferenceChangeListener(listener)
-        onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
-    }
 
-    fun applyPause(seconds: Long) {
-        context.sendBroadcast(Intent(ScheduleReceiver.ACTION_APPLY_PAUSE).apply {
-            setPackage(context.packageName)
-            putExtra(ScheduleReceiver.EXTRA_SECONDS, seconds)
-        })
-    }
-
-    fun cancelPause() {
-        context.sendBroadcast(Intent(ScheduleReceiver.ACTION_PAUSE_END).apply {
-            setPackage(context.packageName)
-        })
-    }
-
-    val applyPauseOrConfirm: (Long) -> Unit = { seconds ->
-        val activePauseUntil = prefs.getLong("pause_until", 0L)
-        if (activePauseUntil > System.currentTimeMillis()) {
-            confirmingPauseSeconds = seconds
+        val progress = visibilityProgress.value
+        val scrimAlpha = if (animationsEnabled) PAUSE_OVERLAY_SCRIM_ALPHA * progress else PAUSE_OVERLAY_SCRIM_ALPHA
+        val cardScale = if (animationsEnabled) {
+            PAUSE_OVERLAY_CARD_MIN_SCALE + ((1f - PAUSE_OVERLAY_CARD_MIN_SCALE) * progress)
         } else {
-            applyPause(seconds)
-            onDismiss()
+            1f
         }
-    }
+        val cardBlurPx = if (blurAnimationSupported) maxBlurRadiusPx * (1f - progress) else 0f
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.42f))
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) { onDismiss() },
-        contentAlignment = Alignment.Center
-    ) {
-        Surface(
+        Box(
             modifier = Modifier
-                .shadow(28.dp, MaterialTheme.shapes.extraLarge, clip = false)
-                .widthIn(max = if (isLandscape) 640.dp else 300.dp)
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = scrimAlpha))
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null
-                ) { /* consume taps to prevent scrim dismiss */ },
-            shape = MaterialTheme.shapes.extraLarge,
-            color = MaterialTheme.colorScheme.background,
-            tonalElevation = 0.dp
+                ) { dismissAfter() },
+            contentAlignment = Alignment.Center
         ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+            Surface(
+                modifier = Modifier
+                    .shadow(28.dp, MaterialTheme.shapes.extraLarge, clip = false)
+                    .graphicsLayer {
+                        alpha = if (animationsEnabled) progress else 1f
+                        scaleX = cardScale
+                        scaleY = cardScale
+                        renderEffect = if (blurAnimationSupported && cardBlurPx > 0.5f) {
+                            android.graphics.RenderEffect
+                                .createBlurEffect(cardBlurPx, cardBlurPx, Shader.TileMode.DECAL)
+                                .asComposeRenderEffect()
+                        } else {
+                            null
+                        }
+                    }
+                    .widthIn(max = if (isLandscape) 640.dp else 300.dp)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { /* consume taps to prevent scrim dismiss */ },
+                shape = MaterialTheme.shapes.extraLarge,
+                color = MaterialTheme.colorScheme.background,
+                tonalElevation = 0.dp
             ) {
-                if (confirmingPauseSeconds != null) {
-                    Text("Replace active pause?", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        "A pause is already active. Replace it with the new duration?",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
-                    ) {
-                        TextButton(
-                            onClick = { confirmingPauseSeconds = null },
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = MaterialTheme.colorScheme.onSurface
-                            )
-                        ) { Text("Cancel") }
-                        Button(
-                            onClick = {
-                                applyPause(confirmingPauseSeconds!!)
-                                onDismiss()
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.secondary,
-                                contentColor = MaterialTheme.colorScheme.onSecondary
-                            )
-                        ) { Text("Replace") }
-                    }
-                    return@Column
-                }
-
-                val isPaused = pauseUntil > now
-                val statusText = when {
-                    !grayscalerEnabled -> "Grayscaler+ Off"
-                    isPaused -> {
-                        val totalSec = (pauseUntil - now) / 1000
-                        val m = totalSec / 60
-                        val s = totalSec % 60
-                        val countdown = if (m > 0) "${m}m ${s}s" else "${s}s"
-                        "Grayscaler+ On · Paused · $countdown"
-                    }
-                    lastDecision == GrayscaleStateManager.Decision.ENABLE -> "Grayscaler+ On · Enabled"
-                    lastDecision == GrayscaleStateManager.Decision.DISABLE -> "Grayscaler+ On · Disabled"
-                    else -> "Grayscaler+ On · Not Available"
-                }
-                val statusColor = when {
-                    !grayscalerEnabled -> MaterialTheme.colorScheme.error
-                    isPaused -> MaterialTheme.colorScheme.tertiary
-                    lastDecision == GrayscaleStateManager.Decision.ENABLE -> MaterialTheme.colorScheme.primary
-                    lastDecision == GrayscaleStateManager.Decision.DISABLE -> MaterialTheme.colorScheme.onSurfaceVariant
-                    else -> MaterialTheme.colorScheme.onSurfaceVariant
-                }
-
-                if (isLandscape) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    if (confirmingPauseSeconds != null) {
+                        Text("Replace active pause?", style = MaterialTheme.typography.titleLarge)
                         Text(
-                            "Pause Grayscaler+",
-                            style = MaterialTheme.typography.headlineSmall,
-                            modifier = Modifier.weight(0.9f)
-                        )
-                        VerticalDivider(
-                            modifier = Modifier.size(width = 1.dp, height = 42.dp),
-                            color = MaterialTheme.colorScheme.outlineVariant
+                            "A pause is already active. Replace it with the new duration?",
+                            style = MaterialTheme.typography.bodyMedium
                         )
                         Row(
-                            modifier = Modifier.weight(1.35f),
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+                        ) {
+                            TextButton(
+                                onClick = { confirmingPauseSeconds = null },
+                                colors = ButtonDefaults.textButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.onSurface
+                                )
+                            ) { Text("Cancel") }
+                            Button(
+                                onClick = {
+                                    dismissAfter {
+                                        applyPause(confirmingPauseSeconds!!)
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.secondary,
+                                    contentColor = MaterialTheme.colorScheme.onSecondary
+                                )
+                            ) { Text("Replace") }
+                        }
+                        return@Column
+                    }
+
+                    val isPaused = pauseUntil > now
+                    val statusText = when {
+                        !grayscalerEnabled -> "Grayscaler+ Off"
+                        isPaused -> {
+                            val totalSec = (pauseUntil - now) / 1000
+                            val m = totalSec / 60
+                            val s = totalSec % 60
+                            val countdown = if (m > 0) "${m}m ${s}s" else "${s}s"
+                            "Grayscaler+ On · Paused · $countdown"
+                        }
+                        lastDecision == GrayscaleStateManager.Decision.ENABLE -> "Grayscaler+ On · Enabled"
+                        lastDecision == GrayscaleStateManager.Decision.DISABLE -> "Grayscaler+ On · Disabled"
+                        else -> "Grayscaler+ On · Not Available"
+                    }
+                    val statusColor = when {
+                        !grayscalerEnabled -> MaterialTheme.colorScheme.error
+                        isPaused -> MaterialTheme.colorScheme.tertiary
+                        lastDecision == GrayscaleStateManager.Decision.ENABLE -> MaterialTheme.colorScheme.primary
+                        lastDecision == GrayscaleStateManager.Decision.DISABLE -> MaterialTheme.colorScheme.onSurfaceVariant
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+
+                    if (isLandscape) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Text(
+                                "Pause Grayscaler+",
+                                style = MaterialTheme.typography.headlineSmall,
+                                modifier = Modifier.weight(0.9f)
+                            )
+                            VerticalDivider(
+                                modifier = Modifier.size(width = 1.dp, height = 42.dp),
+                                color = MaterialTheme.colorScheme.outlineVariant
+                            )
+                            Row(
+                                modifier = Modifier.weight(1.35f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.weight(1f),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = statusColor,
+                                        modifier = Modifier.size(8.dp)
+                                    ) {}
+                                    Text(
+                                        statusText,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = statusColor
+                                    )
+                                }
+                                if (isPaused) {
+                                    TextButton(
+                                        onClick = {
+                                            dismissAfter {
+                                                cancelPause()
+                                                pauseUntil = 0L
+                                                now = System.currentTimeMillis()
+                                                lastDecision = GrayscaleStateManager.lastDecision
+                                            }
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                        colors = ButtonDefaults.textButtonColors(
+                                            contentColor = MaterialTheme.colorScheme.tertiary
+                                        )
+                                    ) { Text("Cancel") }
+                                }
+                            }
+                            IconButton(onClick = {
+                                dismissAfter(PauseOverlayExitAction.OpenApp)
+                            }) {
+                                Icon(Icons.Filled.OpenInNew, contentDescription = "Open app")
+                            }
+                            IconButton(onClick = {
+                                grayscalerEnabled = prefs.getBoolean("grayscaler_enabled", true)
+                                pauseUntil = prefs.getLong("pause_until", 0L)
+                                now = System.currentTimeMillis()
+                                lastDecision = GrayscaleStateManager.lastDecision
+                            }) {
+                                Icon(Icons.Filled.Refresh, contentDescription = "Refresh state")
+                            }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Pause Grayscaler+",
+                                style = MaterialTheme.typography.headlineSmall,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = {
+                                dismissAfter(PauseOverlayExitAction.OpenApp)
+                            }) {
+                                Icon(Icons.Filled.OpenInNew, contentDescription = "Open app")
+                            }
+                            IconButton(onClick = {
+                                grayscalerEnabled = prefs.getBoolean("grayscaler_enabled", true)
+                                pauseUntil = prefs.getLong("pause_until", 0L)
+                                now = System.currentTimeMillis()
+                                lastDecision = GrayscaleStateManager.lastDecision
+                            }) {
+                                Icon(Icons.Filled.Refresh, contentDescription = "Refresh state")
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Row(
                                 modifier = Modifier.weight(1f),
@@ -242,10 +411,12 @@ fun PauseOverlayContent(
                             if (isPaused) {
                                 TextButton(
                                     onClick = {
-                                        cancelPause()
-                                        pauseUntil = 0L
-                                        now = System.currentTimeMillis()
-                                        lastDecision = GrayscaleStateManager.lastDecision
+                                        dismissAfter {
+                                            cancelPause()
+                                            pauseUntil = 0L
+                                            now = System.currentTimeMillis()
+                                            lastDecision = GrayscaleStateManager.lastDecision
+                                        }
                                     },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                                     colors = ButtonDefaults.textButtonColors(
@@ -254,184 +425,114 @@ fun PauseOverlayContent(
                                 ) { Text("Cancel") }
                             }
                         }
-                        IconButton(onClick = onOpenApp) {
-                            Icon(Icons.Filled.OpenInNew, contentDescription = "Open app")
-                        }
-                        IconButton(onClick = {
-                            grayscalerEnabled = prefs.getBoolean("grayscaler_enabled", true)
-                            pauseUntil = prefs.getLong("pause_until", 0L)
-                            now = System.currentTimeMillis()
-                            lastDecision = GrayscaleStateManager.lastDecision
-                        }) {
-                            Icon(Icons.Filled.Refresh, contentDescription = "Refresh state")
-                        }
-                    }
-                } else {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "Pause Grayscaler+",
-                            style = MaterialTheme.typography.headlineSmall,
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(onClick = onOpenApp) {
-                            Icon(Icons.Filled.OpenInNew, contentDescription = "Open app")
-                        }
-                        IconButton(onClick = {
-                            grayscalerEnabled = prefs.getBoolean("grayscaler_enabled", true)
-                            pauseUntil = prefs.getLong("pause_until", 0L)
-                            now = System.currentTimeMillis()
-                            lastDecision = GrayscaleStateManager.lastDecision
-                        }) {
-                            Icon(Icons.Filled.Refresh, contentDescription = "Refresh state")
-                        }
                     }
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Row(
-                            modifier = Modifier.weight(1f),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Surface(
-                                shape = CircleShape,
-                                color = statusColor,
-                                modifier = Modifier.size(8.dp)
-                            ) {}
-                            Text(
-                                statusText,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = statusColor
-                            )
-                        }
-                        if (isPaused) {
-                            TextButton(
-                                onClick = {
-                                    cancelPause()
-                                    pauseUntil = 0L
-                                    now = System.currentTimeMillis()
-                                    lastDecision = GrayscaleStateManager.lastDecision
-                                },
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                                colors = ButtonDefaults.textButtonColors(
-                                    contentColor = MaterialTheme.colorScheme.tertiary
-                                )
-                            ) { Text("Cancel") }
-                        }
-                    }
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        "Global Toggle",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Switch(
-                        checked = grayscalerEnabled,
-                        onCheckedChange = { enabled ->
-                            GrayscalerToggleCoordinator.setEnabled(context, enabled)
-                            grayscalerEnabled = enabled
-                            lastDecision = GrayscaleStateManager.lastDecision
-                        }
-                    )
-                }
-
-                HorizontalDivider()
-
-                val row1 = listOf("5s" to 5L, "15s" to 15L, "30s" to 30L, "1m" to 60L)
-                val row2 = listOf("3m" to 180L, "5m" to 300L, "10m" to 600L, "15m" to 900L)
-                val row3 = listOf("30m" to 1800L, "1h" to 3600L)
-
-                if (isLandscape) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(IntrinsicSize.Min),
-                        horizontalArrangement = Arrangement.spacedBy(20.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            Text(
-                                "Quick pause",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.secondary
-                            )
-                            QuickPauseRow(row1, applyPauseOrConfirm)
-                            QuickPauseRow(row2, applyPauseOrConfirm)
-                            QuickPauseRow(items = row3, onClick = applyPauseOrConfirm, fillEmptySlots = false)
-                        }
-                        VerticalDivider(
-                            modifier = Modifier.fillMaxHeight(),
-                            color = MaterialTheme.colorScheme.outlineVariant
+                        Text(
+                            "Global Toggle",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Column(
-                            modifier = Modifier.weight(0.95f),
-                            verticalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            PauseCustomDurationSection(
-                                customValue = customValue,
-                                onCustomValueChange = { customValue = it },
-                                unitExpanded = unitExpanded,
-                                onUnitExpandedChange = { unitExpanded = it },
-                                selectedUnit = selectedUnit,
-                                onSelectedUnitChange = { selectedUnit = it },
-                                onCancel = onDismiss,
-                                stackFields = true,
-                                showTopDivider = false,
-                                landscapeActions = true,
-                                onApply = {
-                                    val value = customValue.toLongOrNull() ?: return@PauseCustomDurationSection
-                                    val seconds = when (selectedUnit) {
-                                        "Hours" -> value * 3600L
-                                        "Minutes" -> value * 60L
-                                        else -> value
-                                    }
-                                    if (seconds > 0) applyPauseOrConfirm(seconds)
-                                }
-                            )
-                        }
-                    }
-                } else {
-                    Text(
-                        "Quick pause",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
-                    QuickPauseRow(row1, applyPauseOrConfirm)
-                    QuickPauseRow(row2, applyPauseOrConfirm)
-                    QuickPauseRow(items = row3, onClick = applyPauseOrConfirm, fillEmptySlots = false)
-                    PauseCustomDurationSection(
-                        customValue = customValue,
-                        onCustomValueChange = { customValue = it },
-                        unitExpanded = unitExpanded,
-                        onUnitExpandedChange = { unitExpanded = it },
-                        selectedUnit = selectedUnit,
-                        onSelectedUnitChange = { selectedUnit = it },
-                        onCancel = onDismiss,
-                        onApply = {
-                            val value = customValue.toLongOrNull() ?: return@PauseCustomDurationSection
-                            val seconds = when (selectedUnit) {
-                                "Hours" -> value * 3600L
-                                "Minutes" -> value * 60L
-                                else -> value
+                        Switch(
+                            checked = grayscalerEnabled,
+                            onCheckedChange = { enabled ->
+                                GrayscalerToggleCoordinator.setEnabled(context, enabled)
+                                grayscalerEnabled = enabled
+                                lastDecision = GrayscaleStateManager.lastDecision
                             }
-                            if (seconds > 0) applyPauseOrConfirm(seconds)
+                        )
+                    }
+
+                    HorizontalDivider()
+
+                    val row1 = listOf("5s" to 5L, "15s" to 15L, "30s" to 30L, "1m" to 60L)
+                    val row2 = listOf("3m" to 180L, "5m" to 300L, "10m" to 600L, "15m" to 900L)
+                    val row3 = listOf("30m" to 1800L, "1h" to 3600L)
+
+                    if (isLandscape) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(IntrinsicSize.Min),
+                            horizontalArrangement = Arrangement.spacedBy(20.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                Text(
+                                    "Quick pause",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.secondary
+                                )
+                                QuickPauseRow(row1, applyPauseOrConfirm)
+                                QuickPauseRow(row2, applyPauseOrConfirm)
+                                QuickPauseRow(items = row3, onClick = applyPauseOrConfirm, fillEmptySlots = false)
+                            }
+                            VerticalDivider(
+                                modifier = Modifier.fillMaxHeight(),
+                                color = MaterialTheme.colorScheme.outlineVariant
+                            )
+                            Column(
+                                modifier = Modifier.weight(0.95f),
+                                verticalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                PauseCustomDurationSection(
+                                    customValue = customValue,
+                                    onCustomValueChange = { customValue = it },
+                                    unitExpanded = unitExpanded,
+                                    onUnitExpandedChange = { unitExpanded = it },
+                                    selectedUnit = selectedUnit,
+                                    onSelectedUnitChange = { selectedUnit = it },
+                                    onCancel = { dismissAfter() },
+                                    stackFields = true,
+                                    showTopDivider = false,
+                                    landscapeActions = true,
+                                    onApply = {
+                                        val value = customValue.toLongOrNull() ?: return@PauseCustomDurationSection
+                                        val seconds = when (selectedUnit) {
+                                            "Hours" -> value * 3600L
+                                            "Minutes" -> value * 60L
+                                            else -> value
+                                        }
+                                        if (seconds > 0) applyPauseOrConfirm(seconds)
+                                    }
+                                )
+                            }
                         }
-                    )
+                    } else {
+                        Text(
+                            "Quick pause",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                        QuickPauseRow(row1, applyPauseOrConfirm)
+                        QuickPauseRow(row2, applyPauseOrConfirm)
+                        QuickPauseRow(items = row3, onClick = applyPauseOrConfirm, fillEmptySlots = false)
+                        PauseCustomDurationSection(
+                            customValue = customValue,
+                            onCustomValueChange = { customValue = it },
+                            unitExpanded = unitExpanded,
+                            onUnitExpandedChange = { unitExpanded = it },
+                            selectedUnit = selectedUnit,
+                            onSelectedUnitChange = { selectedUnit = it },
+                            onCancel = { dismissAfter() },
+                            onApply = {
+                                val value = customValue.toLongOrNull() ?: return@PauseCustomDurationSection
+                                val seconds = when (selectedUnit) {
+                                    "Hours" -> value * 3600L
+                                    "Minutes" -> value * 60L
+                                    else -> value
+                                }
+                                if (seconds > 0) applyPauseOrConfirm(seconds)
+                            }
+                        )
+                    }
                 }
             }
         }

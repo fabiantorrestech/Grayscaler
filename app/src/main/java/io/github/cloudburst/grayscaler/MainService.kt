@@ -17,6 +17,9 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.lifecycle.Lifecycle
@@ -36,6 +39,7 @@ class MainService : AccessibilityService() {
     private var overlayParams: WindowManager.LayoutParams? = null
     private var overlayLifecycleOwner: OverlayLifecycleOwner? = null
     private var countdownOverlay: PauseCountdownOverlayManager? = null
+    private var overlayPresentationKey by mutableIntStateOf(0)
 
     private inner class OverlayLifecycleOwner : LifecycleOwner, SavedStateRegistryOwner {
         private val lifecycleRegistry = LifecycleRegistry(this)
@@ -171,6 +175,7 @@ class MainService : AccessibilityService() {
             setContent {
                 GrayscalerTheme {
                     PauseOverlayContent(
+                        presentationKey = overlayPresentationKey,
                         onDismiss = { hidePersistentOverlay() },
                         onOpenApp = {
                             startActivity(
@@ -199,10 +204,14 @@ class MainService : AccessibilityService() {
     private fun showPersistentOverlay() {
         val view = overlayView ?: return
         val params = overlayParams ?: return
+        val wasVisible = view.visibility == View.VISIBLE
         params.flags = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
             WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
         windowManager.updateViewLayout(view, params)
         view.visibility = View.VISIBLE
+        if (!wasVisible) {
+            overlayPresentationKey += 1
+        }
     }
 
     private fun hidePersistentOverlay() {

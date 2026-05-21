@@ -73,6 +73,9 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
     var persistentOverlayEnabled by remember {
         mutableStateOf(prefs.getBoolean("persistent_overlay_mode", false))
     }
+    var pauseOverlayBlurAnimationEnabled by remember {
+        mutableStateOf(prefs.getBoolean(PREF_PAUSE_OVERLAY_BLUR_ANIMATION_ENABLED, true))
+    }
     val appearanceSettings = rememberAppearanceSettings(context)
     val isMaterialYou = appearanceSettings.useDynamicTheme && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val sectionColor = if (isMaterialYou) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
@@ -360,6 +363,28 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
                     onCheckedChange = { enabled ->
                         persistentOverlayEnabled = enabled
                         prefs.edit().putBoolean("persistent_overlay_mode", enabled).apply()
+                    }
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text("Animate pause shortcut menu", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Adds a blur fade-in/out when the intent-triggered pause menu opens or closes. On older Android versions, falls back to fade/scale only.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = pauseOverlayBlurAnimationEnabled,
+                    onCheckedChange = { enabled ->
+                        pauseOverlayBlurAnimationEnabled = enabled
+                        prefs.edit().putBoolean(PREF_PAUSE_OVERLAY_BLUR_ANIMATION_ENABLED, enabled).apply()
                     }
                 )
             }
