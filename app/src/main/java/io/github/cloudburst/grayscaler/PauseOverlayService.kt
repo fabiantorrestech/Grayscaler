@@ -77,6 +77,7 @@ class PauseOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
 
         overlayView = view
         windowManager.addView(view, params)
+        view.post { view.requestFocus() }
     }
 
     private fun dismiss() {

@@ -66,6 +66,11 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
@@ -207,6 +212,15 @@ fun PauseOverlayContent(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = scrimAlpha))
+                .onKeyEvent { keyEvent ->
+                    if (keyEvent.type == KeyEventType.KeyUp &&
+                        (keyEvent.key == Key.Escape || keyEvent.key == Key.Back)) {
+                        dismissAfter()
+                        true
+                    } else {
+                        false
+                    }
+                }
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null
@@ -449,7 +463,7 @@ fun PauseOverlayContent(
                     HorizontalDivider()
 
                     val row1 = listOf("5s" to 5L, "15s" to 15L, "30s" to 30L, "1m" to 60L)
-                    val row2 = listOf("3m" to 180L, "5m" to 300L, "10m" to 600L, "15m" to 900L)
+                    val row2 = listOf("2m" to 120L, "5m" to 300L, "10m" to 600L, "15m" to 900L)
                     val row3 = listOf("30m" to 1800L, "1h" to 3600L)
 
                     if (isLandscape) {

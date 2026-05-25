@@ -195,7 +195,7 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
             Text("Quick Pause", style = MaterialTheme.typography.titleMedium, color = sectionColor)
 
             val row1 = listOf("5s" to 5L, "15s" to 15L, "30s" to 30L, "1m" to 60L)
-            val row2 = listOf("3m" to 180L, "5m" to 300L, "10m" to 600L, "15m" to 900L)
+            val row2 = listOf("2m" to 120L, "5m" to 300L, "10m" to 600L, "15m" to 900L)
             val row3 = listOf("30m" to 1800L, "1h" to 3600L)
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

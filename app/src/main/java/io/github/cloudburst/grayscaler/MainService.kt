@@ -212,6 +212,7 @@ class MainService : AccessibilityService() {
         if (!wasVisible) {
             overlayPresentationKey += 1
         }
+        view.post { view.requestFocus() }
     }
 
     private fun hidePersistentOverlay() {
