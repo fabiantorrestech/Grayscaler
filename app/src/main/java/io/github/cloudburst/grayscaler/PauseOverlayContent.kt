@@ -54,7 +54,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,10 +75,8 @@ const val PREF_PAUSE_OVERLAY_BLUR_ANIMATION_ENABLED = "pause_overlay_blur_animat
 
 private const val PAUSE_OVERLAY_SCRIM_ALPHA = 0.52f
 private const val PAUSE_OVERLAY_CARD_MIN_SCALE = 0.94f
-private val PauseOverlayAnimationSpec = tween<Float>(
-    durationMillis = 220,
-    easing = FastOutSlowInEasing
-)
+private val PauseOverlayEnterSpec = tween<Float>(durationMillis = 160, easing = LinearOutSlowInEasing)
+private val PauseOverlayExitSpec  = tween<Float>(durationMillis = 130, easing = FastOutLinearInEasing)
 
 private enum class PauseOverlayExitAction {
     Dismiss,
@@ -109,7 +108,7 @@ fun PauseOverlayContent(
         val scope = rememberCoroutineScope()
         val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
         val blurAnimationSupported = animationsEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-        val maxBlurRadiusPx = with(LocalDensity.current) { 18.dp.toPx() }
+        val maxBlurRadiusPx = with(LocalDensity.current) { 12.dp.toPx() }
         val visibilityProgress = remember(animationsEnabled) {
             Animatable(if (animationsEnabled) 0f else 1f)
         }
@@ -117,7 +116,7 @@ fun PauseOverlayContent(
         LaunchedEffect(animationsEnabled) {
             if (animationsEnabled) {
                 visibilityProgress.snapTo(0f)
-                visibilityProgress.animateTo(1f, PauseOverlayAnimationSpec)
+                visibilityProgress.animateTo(1f, PauseOverlayEnterSpec)
             } else {
                 visibilityProgress.snapTo(1f)
             }
@@ -166,7 +165,7 @@ fun PauseOverlayContent(
                 return
             }
             scope.launch {
-                visibilityProgress.animateTo(0f, PauseOverlayAnimationSpec)
+                visibilityProgress.animateTo(0f, PauseOverlayExitSpec)
                 finishDismiss(action)
             }
         }

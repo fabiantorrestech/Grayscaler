@@ -49,7 +49,10 @@ object GrayscaleStateManager {
 
         val pkg = lastMeaningfulPkg ?: prefs.getString(PREF_LAST_MEANINGFUL_PKG, null) ?: return
         val cls = lastMeaningfulClassName.ifEmpty { prefs.getString(PREF_LAST_MEANINGFUL_CLASS, "") ?: "" }
-        applyToSystem(context, evaluate(pkg, cls, context))
+        // SKIP means the last foreground was a system/overlay app that shouldn't gate grayscale state.
+        // At this point we know pause is off, grayscaler is enabled, and bedtime isn't active — default to ENABLE.
+        val result = evaluate(pkg, cls, context)
+        applyToSystem(context, if (result == Decision.SKIP) Decision.ENABLE else result)
     }
 
     fun evaluateCurrentApp(context: Context, className: String): Decision {
