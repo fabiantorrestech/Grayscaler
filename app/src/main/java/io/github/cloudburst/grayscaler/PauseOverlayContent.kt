@@ -66,6 +66,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import android.media.AudioManager
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -101,6 +102,7 @@ fun PauseOverlayContent(
         val animationsEnabled = remember {
             prefs.getBoolean(PREF_PAUSE_OVERLAY_BLUR_ANIMATION_ENABLED, true)
         }
+        val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
         var grayscalerEnabled by remember { mutableStateOf(GrayscalerToggleCoordinator.isEnabled(context)) }
         var lastDecision by remember { mutableStateOf(GrayscaleStateManager.lastDecision) }
         var pauseUntil by remember { mutableStateOf(prefs.getLong("pause_until", 0L)) }
@@ -213,12 +215,25 @@ fun PauseOverlayContent(
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = scrimAlpha))
                 .onKeyEvent { keyEvent ->
-                    if (keyEvent.type == KeyEventType.KeyUp &&
-                        (keyEvent.key == Key.Escape || keyEvent.key == Key.Back)) {
-                        dismissAfter()
-                        true
-                    } else {
-                        false
+                    when {
+                        keyEvent.type == KeyEventType.KeyUp &&
+                            (keyEvent.key == Key.Escape || keyEvent.key == Key.Back) -> {
+                            dismissAfter()
+                            true
+                        }
+                        keyEvent.key == Key.VolumeUp || keyEvent.key == Key.VolumeDown -> {
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                val direction = if (keyEvent.key == Key.VolumeUp)
+                                    AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
+                                audioManager.adjustSuggestedStreamVolume(
+                                    direction,
+                                    AudioManager.USE_DEFAULT_STREAM_TYPE,
+                                    AudioManager.FLAG_SHOW_UI
+                                )
+                            }
+                            true
+                        }
+                        else -> false
                     }
                 }
                 .clickable(
