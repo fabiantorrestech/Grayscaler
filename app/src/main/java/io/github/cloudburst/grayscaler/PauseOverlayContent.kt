@@ -106,11 +106,15 @@ fun PauseOverlayContent(
         var grayscalerEnabled by remember { mutableStateOf(GrayscalerToggleCoordinator.isEnabled(context)) }
         var lastDecision by remember { mutableStateOf(GrayscaleStateManager.lastDecision) }
         var pauseUntil by remember { mutableStateOf(prefs.getLong("pause_until", 0L)) }
+        var pauseType by remember { mutableStateOf(prefs.getString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed") ?: "timed") }
+        var sessionPauseStartMs by remember { mutableStateOf(prefs.getLong(ScheduleReceiver.PREF_SESSION_PAUSE_START_MS, 0L)) }
+        val lastMeaningfulPkg = remember { prefs.getString("last_meaningful_foreground_pkg", null) }
         var now by remember { mutableStateOf(System.currentTimeMillis()) }
         var customValue by remember { mutableStateOf("") }
         var unitExpanded by remember { mutableStateOf(false) }
         var selectedUnit by remember { mutableStateOf("Minutes") }
         var confirmingPauseSeconds by remember { mutableStateOf<Long?>(null) }
+        var confirmingSession by remember { mutableStateOf(false) }
         var isClosing by remember { mutableStateOf(false) }
         val scope = rememberCoroutineScope()
         val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -129,8 +133,8 @@ fun PauseOverlayContent(
             }
         }
 
-        LaunchedEffect(pauseUntil) {
-            while (pauseUntil > System.currentTimeMillis()) {
+        LaunchedEffect(Unit) {
+            while (true) {
                 delay(1000L)
                 now = System.currentTimeMillis()
             }
@@ -145,6 +149,13 @@ fun PauseOverlayContent(
                     }
                     "pause_until" -> {
                         pauseUntil = prefs.getLong("pause_until", 0L)
+                        now = System.currentTimeMillis()
+                    }
+                    ScheduleReceiver.PREF_PAUSE_TYPE -> {
+                        pauseType = prefs.getString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed") ?: "timed"
+                    }
+                    ScheduleReceiver.PREF_SESSION_PAUSE_START_MS -> {
+                        sessionPauseStartMs = prefs.getLong(ScheduleReceiver.PREF_SESSION_PAUSE_START_MS, 0L)
                         now = System.currentTimeMillis()
                     }
                 }
@@ -190,14 +201,35 @@ fun PauseOverlayContent(
             })
         }
 
-        val applyPauseOrConfirm: (Long) -> Unit = { seconds ->
+        fun applySessionPause() {
+            val pkg = lastMeaningfulPkg ?: return
+            context.sendBroadcast(Intent(ScheduleReceiver.ACTION_APPLY_SESSION_PAUSE).apply {
+                setPackage(context.packageName)
+                putExtra(ScheduleReceiver.EXTRA_SESSION_PKG, pkg)
+            })
+        }
+
+        fun hasActivePause(): Boolean {
             val activePauseUntil = prefs.getLong("pause_until", 0L)
-            if (activePauseUntil > System.currentTimeMillis()) {
+            return activePauseUntil > System.currentTimeMillis() ||
+                pauseType == "session" || pauseType == "pending_session"
+        }
+
+        val applyPauseOrConfirm: (Long) -> Unit = { seconds ->
+            if (hasActivePause()) {
                 confirmingPauseSeconds = seconds
             } else {
                 dismissAfter {
                     applyPause(seconds)
                 }
+            }
+        }
+
+        val applySessionOrConfirm: () -> Unit = {
+            if (hasActivePause()) {
+                confirmingSession = true
+            } else {
+                dismissAfter { applySessionPause() }
             }
         }
 
@@ -270,7 +302,7 @@ fun PauseOverlayContent(
                     modifier = Modifier.padding(24.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    if (confirmingPauseSeconds != null) {
+                    if (confirmingPauseSeconds != null || confirmingSession) {
                         Text("Replace active pause?", style = MaterialTheme.typography.titleLarge)
                         Text(
                             "A pause is already active. Replace it with the new duration?",
@@ -281,15 +313,19 @@ fun PauseOverlayContent(
                             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
                         ) {
                             TextButton(
-                                onClick = { confirmingPauseSeconds = null },
+                                onClick = { confirmingPauseSeconds = null; confirmingSession = false },
                                 colors = ButtonDefaults.textButtonColors(
                                     contentColor = MaterialTheme.colorScheme.onSurface
                                 )
                             ) { Text("Cancel") }
                             Button(
                                 onClick = {
+                                    val secs = confirmingPauseSeconds
+                                    val doSession = confirmingSession
+                                    confirmingPauseSeconds = null
+                                    confirmingSession = false
                                     dismissAfter {
-                                        applyPause(confirmingPauseSeconds!!)
+                                        if (secs != null) applyPause(secs) else if (doSession) applySessionPause()
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(
@@ -302,8 +338,19 @@ fun PauseOverlayContent(
                     }
 
                     val isPaused = pauseUntil > now
+                    val isSessionActive = pauseType == "session"
+                    val isPendingSession = pauseType == "pending_session"
                     val statusText = when {
                         !grayscalerEnabled -> "Grayscaler+ Off"
+                        isPendingSession -> "Grayscaler+ On · Waiting for next app…"
+                        isSessionActive -> {
+                            val elapsed = (now - sessionPauseStartMs).coerceAtLeast(0L)
+                            val totalSec = elapsed / 1000
+                            val m = totalSec / 60
+                            val s = totalSec % 60
+                            val elapsedStr = if (m > 0) "${m}m ${s}s" else "${s}s"
+                            "Grayscaler+ On · Session · $elapsedStr"
+                        }
                         isPaused -> {
                             val totalSec = (pauseUntil - now) / 1000
                             val m = totalSec / 60
@@ -317,6 +364,7 @@ fun PauseOverlayContent(
                     }
                     val statusColor = when {
                         !grayscalerEnabled -> MaterialTheme.colorScheme.error
+                        isPendingSession || isSessionActive -> MaterialTheme.colorScheme.tertiary
                         isPaused -> MaterialTheme.colorScheme.tertiary
                         lastDecision == GrayscaleStateManager.Decision.ENABLE -> MaterialTheme.colorScheme.primary
                         lastDecision == GrayscaleStateManager.Decision.DISABLE -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -359,7 +407,7 @@ fun PauseOverlayContent(
                                         color = statusColor
                                     )
                                 }
-                                if (isPaused) {
+                                if (isPaused || isSessionActive || isPendingSession) {
                                     TextButton(
                                         onClick = {
                                             dismissAfter {
@@ -436,7 +484,7 @@ fun PauseOverlayContent(
                                     color = statusColor
                                 )
                             }
-                            if (isPaused) {
+                            if (isPaused || isSessionActive || isPendingSession) {
                                 TextButton(
                                     onClick = {
                                         dismissAfter {
@@ -501,6 +549,18 @@ fun PauseOverlayContent(
                                 QuickPauseRow(row1, applyPauseOrConfirm)
                                 QuickPauseRow(row2, applyPauseOrConfirm)
                                 QuickPauseRow(items = row3, onClick = applyPauseOrConfirm, fillEmptySlots = false)
+                                FilledTonalButton(
+                                    onClick = applySessionOrConfirm,
+                                    enabled = !lastMeaningfulPkg.isNullOrEmpty(),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                                    colors = ButtonDefaults.filledTonalButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.secondary,
+                                        contentColor = MaterialTheme.colorScheme.onSecondary
+                                    )
+                                ) {
+                                    Text("Current App Session", style = MaterialTheme.typography.labelLarge)
+                                }
                             }
                             VerticalDivider(
                                 modifier = Modifier.fillMaxHeight(),
@@ -542,6 +602,18 @@ fun PauseOverlayContent(
                         QuickPauseRow(row1, applyPauseOrConfirm)
                         QuickPauseRow(row2, applyPauseOrConfirm)
                         QuickPauseRow(items = row3, onClick = applyPauseOrConfirm, fillEmptySlots = false)
+                        FilledTonalButton(
+                            onClick = applySessionOrConfirm,
+                            enabled = !lastMeaningfulPkg.isNullOrEmpty(),
+                            modifier = Modifier.fillMaxWidth(),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = MaterialTheme.colorScheme.secondary,
+                                contentColor = MaterialTheme.colorScheme.onSecondary
+                            )
+                        ) {
+                            Text("Current App Session", style = MaterialTheme.typography.labelLarge)
+                        }
                         PauseCustomDurationSection(
                             customValue = customValue,
                             onCustomValueChange = { customValue = it },

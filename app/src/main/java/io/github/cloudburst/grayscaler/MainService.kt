@@ -10,6 +10,8 @@ import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.View
 import android.view.WindowManager
@@ -40,6 +42,22 @@ class MainService : AccessibilityService() {
     private var overlayLifecycleOwner: OverlayLifecycleOwner? = null
     private var countdownOverlay: PauseCountdownOverlayManager? = null
     private var overlayPresentationKey by mutableIntStateOf(0)
+
+    private val graceHandler = Handler(Looper.getMainLooper())
+    private val graceRunnable = Runnable {
+        sendBroadcast(Intent(ScheduleReceiver.ACTION_PAUSE_END).apply { setPackage(packageName) })
+    }
+
+    private val launcherPackages: Set<String> by lazy {
+        val set = mutableSetOf(packageName)
+        set.addAll(KNOWN_LAUNCHER_PACKAGES)
+        try {
+            val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+            packageManager.queryIntentActivities(homeIntent, 0)
+                .forEach { set.add(it.activityInfo.packageName) }
+        } catch (_: Exception) {}
+        set
+    }
 
     private inner class OverlayLifecycleOwner : LifecycleOwner, SavedStateRegistryOwner {
         private val lifecycleRegistry = LifecycleRegistry(this)
@@ -106,8 +124,19 @@ class MainService : AccessibilityService() {
                 val pauseUntil = prefs.getLong("pause_until", 0L)
                 if (pauseUntil > System.currentTimeMillis()) {
                     countdownOverlay?.show(pauseUntil)
-                } else {
+                } else if (prefs.getString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed") != "session") {
                     countdownOverlay?.hide()
+                }
+            }
+            ScheduleReceiver.PREF_PAUSE_TYPE -> {
+                val pauseType = prefs.getString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed") ?: "timed"
+                when (pauseType) {
+                    "session" -> {
+                        val startMs = prefs.getLong(ScheduleReceiver.PREF_SESSION_PAUSE_START_MS, 0L)
+                        countdownOverlay?.showSession(startMs)
+                    }
+                    "timed" -> countdownOverlay?.hide()
+                    "pending_session" -> countdownOverlay?.hide()
                 }
             }
         }
@@ -139,10 +168,18 @@ class MainService : AccessibilityService() {
         val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
         if (prefs.getBoolean("persistent_overlay_mode", false)) registerPersistentOverlay()
         val pauseUntil = prefs.getLong("pause_until", 0L)
-        if (pauseUntil > System.currentTimeMillis()) countdownOverlay?.show(pauseUntil)
+        val pauseType = prefs.getString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed") ?: "timed"
+        when {
+            pauseUntil > System.currentTimeMillis() -> countdownOverlay?.show(pauseUntil)
+            pauseType == "session" -> {
+                val startMs = prefs.getLong(ScheduleReceiver.PREF_SESSION_PAUSE_START_MS, 0L)
+                countdownOverlay?.showSession(startMs)
+            }
+        }
     }
 
     override fun onDestroy() {
+        graceHandler.removeCallbacks(graceRunnable)
         unregisterReceiver(screenReceiver)
         unregisterReceiver(overlayReceiver)
         getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
@@ -324,7 +361,38 @@ class MainService : AccessibilityService() {
         handleForegroundApp(pkg, className)
     }
 
+    private fun checkSessionPauseState(pkg: String) {
+        val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+        when (prefs.getString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed") ?: "timed") {
+            "pending_session" -> {
+                if (pkg !in launcherPackages) {
+                    sendBroadcast(Intent(ScheduleReceiver.ACTION_APPLY_SESSION_PAUSE).apply {
+                        setPackage(packageName)
+                        putExtra(ScheduleReceiver.EXTRA_SESSION_PKG, pkg)
+                    })
+                }
+            }
+            "session" -> {
+                val sessionPkg = prefs.getString(ScheduleReceiver.PREF_SESSION_PAUSE_PKG, "") ?: ""
+                if (pkg == sessionPkg) {
+                    graceHandler.removeCallbacks(graceRunnable)
+                    val startMs = prefs.getLong(ScheduleReceiver.PREF_SESSION_PAUSE_START_MS, 0L)
+                    countdownOverlay?.showSession(startMs)
+                } else {
+                    val gracePeriodMs = prefs.getLong(
+                        ScheduleReceiver.PREF_SESSION_GRACE_PERIOD_MS,
+                        ScheduleReceiver.SESSION_GRACE_PERIOD_DEFAULT_MS
+                    )
+                    graceHandler.removeCallbacks(graceRunnable)
+                    graceHandler.postDelayed(graceRunnable, gracePeriodMs)
+                    countdownOverlay?.hide()
+                }
+            }
+        }
+    }
+
     private fun handleForegroundApp(pkg: String, className: String) {
+        checkSessionPauseState(pkg)
         val decision = GrayscaleStateManager.evaluate(pkg, className, this)
         GrayscaleStateManager.applyToSystem(this, decision)
         if (decision == GrayscaleStateManager.Decision.SKIP) return
@@ -534,6 +602,17 @@ class MainService : AccessibilityService() {
         private const val EXPERIMENTAL_NOTIFICATION_SHADE_TIMEOUT_MS = 1200L
 
         private val DOMAIN_REGEX = Regex("^[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?\\.[a-zA-Z]{2,}(/\\S*)?$")
+
+        private val KNOWN_LAUNCHER_PACKAGES = setOf(
+            "com.google.android.apps.nexuslauncher",
+            "com.samsung.android.app.launcher",
+            "com.sec.android.app.launcher",
+            "com.miui.home",
+            "com.huawei.android.launcher",
+            "com.android.launcher3",
+            "com.oneplus.launcher",
+            "com.nothing.launcher",
+        )
 
         private val RECENTS_KEYWORDS = setOf("Recents", "RecentTask", "TaskView", "RecentsActivity")
 

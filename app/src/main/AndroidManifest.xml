@@ -74,6 +74,7 @@
                 <action android:name="io.github.cloudburst.grayscaler.ACTION_SET_ENABLED" />
                 <action android:name="io.github.cloudburst.grayscaler.ACTION_PAUSE_GRAYSCALER" />
                 <action android:name="io.github.cloudburst.grayscaler.ACTION_APPLY_PAUSE" />
+                <action android:name="io.github.cloudburst.grayscaler.ACTION_APPLY_SESSION_PAUSE" />
                 <action android:name="io.github.cloudburst.grayscaler.ACTION_PAUSE_END" />
                 <action android:name="io.github.cloudburst.grayscaler.ACTION_PAUSE_NOTIFY_COUNTDOWN" />
             </intent-filter>

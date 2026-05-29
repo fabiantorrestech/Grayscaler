@@ -63,7 +63,12 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
 
     var pauseUntil by remember { mutableStateOf(prefs.getLong("pause_until", 0L)) }
     var remainingMs by remember { mutableStateOf(0L) }
+    var pauseType by remember { mutableStateOf(prefs.getString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed") ?: "timed") }
+    var sessionPkg by remember { mutableStateOf(prefs.getString(ScheduleReceiver.PREF_SESSION_PAUSE_PKG, "") ?: "") }
+    var sessionStartMs by remember { mutableStateOf(prefs.getLong(ScheduleReceiver.PREF_SESSION_PAUSE_START_MS, 0L)) }
+    var gracePeriodSecs by remember { mutableStateOf((prefs.getLong(ScheduleReceiver.PREF_SESSION_GRACE_PERIOD_MS, ScheduleReceiver.SESSION_GRACE_PERIOD_DEFAULT_MS) / 1000L).toString()) }
     var pendingPauseSeconds by remember { mutableStateOf<Long?>(null) }
+    var pendingSessionActivation by remember { mutableStateOf(false) }
     var customValue by remember { mutableStateOf("") }
     var unitExpanded by remember { mutableStateOf(false) }
     var selectedUnit by remember { mutableStateOf("Minutes") }
@@ -86,20 +91,33 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
         ) == PackageManager.PERMISSION_GRANTED
     } else true
 
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+
     LaunchedEffect(Unit) {
         while (true) {
             val until = prefs.getLong("pause_until", 0L)
             pauseUntil = until
             remainingMs = (until - System.currentTimeMillis()).coerceAtLeast(0L)
+            pauseType = prefs.getString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed") ?: "timed"
+            sessionPkg = prefs.getString(ScheduleReceiver.PREF_SESSION_PAUSE_PKG, "") ?: ""
+            sessionStartMs = prefs.getLong(ScheduleReceiver.PREF_SESSION_PAUSE_START_MS, 0L)
+            now = System.currentTimeMillis()
             delay(1000L)
         }
     }
 
     val isPaused = remainingMs > 0L
+    val isSessionActive = pauseType == "session"
+    val isPendingSession = pauseType == "pending_session"
+
+    fun hasActivePause(): Boolean {
+        val currentUntil = prefs.getLong("pause_until", 0L)
+        val type = prefs.getString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed") ?: "timed"
+        return currentUntil > System.currentTimeMillis() || type == "session" || type == "pending_session"
+    }
 
     fun applyPause(seconds: Long) {
-        val currentUntil = prefs.getLong("pause_until", 0L)
-        if (currentUntil > System.currentTimeMillis()) {
+        if (hasActivePause()) {
             pendingPauseSeconds = seconds
         } else {
             context.sendBroadcast(Intent(ScheduleReceiver.ACTION_APPLY_PAUSE).apply {
@@ -109,23 +127,36 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
         }
     }
 
-    if (pendingPauseSeconds != null) {
+    fun applySessionPause() {
+        context.sendBroadcast(Intent(ScheduleReceiver.ACTION_APPLY_SESSION_PAUSE).apply {
+            setPackage(context.packageName)
+            // No pkg extra = pending_session (from in-app UI)
+        })
+    }
+
+    if (pendingPauseSeconds != null || pendingSessionActivation) {
         AlertDialog(
-            onDismissRequest = { pendingPauseSeconds = null },
+            onDismissRequest = { pendingPauseSeconds = null; pendingSessionActivation = false },
             title = { Text("Replace active pause?") },
             text = { Text("A pause is already active. Do you want to replace it with the new duration?") },
             confirmButton = {
                 TextButton(onClick = {
-                    val seconds = pendingPauseSeconds!!
+                    val seconds = pendingPauseSeconds
+                    val doSession = pendingSessionActivation
                     pendingPauseSeconds = null
-                    context.sendBroadcast(Intent(ScheduleReceiver.ACTION_APPLY_PAUSE).apply {
-                        setPackage(context.packageName)
-                        putExtra(ScheduleReceiver.EXTRA_SECONDS, seconds)
-                    })
+                    pendingSessionActivation = false
+                    if (seconds != null) {
+                        context.sendBroadcast(Intent(ScheduleReceiver.ACTION_APPLY_PAUSE).apply {
+                            setPackage(context.packageName)
+                            putExtra(ScheduleReceiver.EXTRA_SECONDS, seconds)
+                        })
+                    } else if (doSession) {
+                        applySessionPause()
+                    }
                 }) { Text("Replace") }
             },
             dismissButton = {
-                TextButton(onClick = { pendingPauseSeconds = null }) { Text("Cancel") }
+                TextButton(onClick = { pendingPauseSeconds = null; pendingSessionActivation = false }) { Text("Cancel") }
             }
         )
     }
@@ -155,37 +186,78 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    if (isPaused) {
-                        val timeFormat = SimpleDateFormat("h:mm a", Locale.getDefault())
-                        val reEnableTime = timeFormat.format(Date(pauseUntil))
-                        val totalSeconds = remainingMs / 1000
-                        val minutes = totalSeconds / 60
-                        val seconds = totalSeconds % 60
-                        val countdownText = if (minutes > 0) "${minutes}m ${seconds}s remaining" else "${seconds}s remaining"
-
-                        Text("Paused until $reEnableTime", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            countdownText,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Button(onClick = {
-                            context.sendBroadcast(Intent(ScheduleReceiver.ACTION_PAUSE_END).apply {
-                                setPackage(context.packageName)
-                            })
-                            remainingMs = 0L
-                        }) { Text("Cancel Pause") }
-                    } else {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(
-                                Icons.Filled.CheckCircle,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
+                    when {
+                        isPendingSession -> {
+                            Text("Waiting for next app…", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "Grayscale will pause when you open the next app.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Text("Grayscaler+ is active", style = MaterialTheme.typography.titleMedium)
+                            Button(onClick = {
+                                context.sendBroadcast(Intent(ScheduleReceiver.ACTION_PAUSE_END).apply {
+                                    setPackage(context.packageName)
+                                })
+                            }) { Text("Cancel") }
+                        }
+                        isSessionActive -> {
+                            val elapsed = (now - sessionStartMs).coerceAtLeast(0L)
+                            val totalSec = elapsed / 1000
+                            val minutes = totalSec / 60
+                            val seconds = totalSec % 60
+                            val elapsedText = if (minutes > 0) "${minutes}m ${seconds}s elapsed" else "${seconds}s elapsed"
+                            val appLabel = remember(sessionPkg) {
+                                try {
+                                    context.packageManager.getApplicationLabel(
+                                        context.packageManager.getApplicationInfo(sessionPkg, 0)
+                                    ).toString()
+                                } catch (_: Exception) { sessionPkg }
+                            }
+                            Text("Session pause · $appLabel", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                elapsedText,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Button(onClick = {
+                                context.sendBroadcast(Intent(ScheduleReceiver.ACTION_PAUSE_END).apply {
+                                    setPackage(context.packageName)
+                                })
+                            }) { Text("Cancel Pause") }
+                        }
+                        isPaused -> {
+                            val timeFormat = SimpleDateFormat("h:mm a", Locale.getDefault())
+                            val reEnableTime = timeFormat.format(Date(pauseUntil))
+                            val totalSeconds = remainingMs / 1000
+                            val minutes = totalSeconds / 60
+                            val seconds = totalSeconds % 60
+                            val countdownText = if (minutes > 0) "${minutes}m ${seconds}s remaining" else "${seconds}s remaining"
+
+                            Text("Paused until $reEnableTime", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                countdownText,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Button(onClick = {
+                                context.sendBroadcast(Intent(ScheduleReceiver.ACTION_PAUSE_END).apply {
+                                    setPackage(context.packageName)
+                                })
+                                remainingMs = 0L
+                            }) { Text("Cancel Pause") }
+                        }
+                        else -> {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.CheckCircle,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Text("Grayscaler+ is active", style = MaterialTheme.typography.titleMedium)
+                            }
                         }
                     }
                 }
@@ -225,6 +297,11 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
                     ) { Text(label, style = MaterialTheme.typography.labelLarge) }
                 }
             }
+            FilledTonalButton(
+                onClick = { if (hasActivePause()) pendingSessionActivation = true else applySessionPause() },
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
+            ) { Text("Current App Session", style = MaterialTheme.typography.labelLarge) }
 
             HorizontalDivider()
 
@@ -386,6 +463,42 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
                         pauseOverlayBlurAnimationEnabled = enabled
                         prefs.edit().putBoolean(PREF_PAUSE_OVERLAY_BLUR_ANIMATION_ENABLED, enabled).apply()
                     }
+                )
+            }
+
+            HorizontalDivider()
+
+            Text(
+                "Session Pause",
+                style = MaterialTheme.typography.titleSmall,
+                color = sectionColor
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Grace period when switching apps", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Seconds before the session ends after leaving the app.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                OutlinedTextField(
+                    value = gracePeriodSecs,
+                    onValueChange = { v ->
+                        gracePeriodSecs = v.filter { it.isDigit() }
+                        val secs = gracePeriodSecs.toLongOrNull()
+                        if (secs != null && secs >= 0) {
+                            prefs.edit().putLong(ScheduleReceiver.PREF_SESSION_GRACE_PERIOD_MS, secs * 1000L).apply()
+                        }
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    suffix = { Text("s") },
+                    modifier = Modifier.weight(0.3f),
+                    singleLine = true
                 )
             }
 

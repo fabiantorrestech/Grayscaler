@@ -100,7 +100,11 @@ object GrayscaleStateManager {
 
         rememberMeaningfulForeground(context, pkg, className)
 
-        // Pause active — grayscale off
+        // Session pause active — disable grayscale for the target app only
+        if (prefs.getString("pause_type", "timed") == "session" &&
+            pkg == prefs.getString("session_pause_pkg", "")) return Decision.DISABLE
+
+        // Timed pause active — grayscale off
         if (prefs.getLong("pause_until", 0L) > System.currentTimeMillis()) return Decision.DISABLE
 
         // Global switch off — grayscale off
@@ -140,6 +144,10 @@ object GrayscaleStateManager {
     fun applySystemEventMode(context: Context, mode: String): Boolean {
         val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
 
+        if ((prefs.getString("pause_type", "timed") ?: "timed") == "session") {
+            applyToSystem(context, Decision.DISABLE)
+            return true
+        }
         if (prefs.getLong("pause_until", 0L) > System.currentTimeMillis()) {
             applyToSystem(context, Decision.DISABLE)
             return true

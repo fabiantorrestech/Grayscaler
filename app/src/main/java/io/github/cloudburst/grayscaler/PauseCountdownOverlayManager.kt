@@ -27,6 +27,8 @@ class PauseCountdownOverlayManager(
     private var pillView: PauseCountdownView? = null
     private var layoutParams: WindowManager.LayoutParams? = null
     private var pauseUntilMs: Long = 0L
+    private var sessionMode: Boolean = false
+    private var sessionStartMs: Long = 0L
     private var snappedLeft: Boolean = false
     private var isExpanded: Boolean = false
 
@@ -43,19 +45,26 @@ class PauseCountdownOverlayManager(
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
         override fun run() {
-            val remaining = pauseUntilMs - System.currentTimeMillis()
-            if (remaining <= 0L) {
-                hide()
-                return
+            if (sessionMode) {
+                val elapsed = System.currentTimeMillis() - sessionStartMs
+                pillView?.setDisplayMs(elapsed)
+                handler.postDelayed(this, TICK_INTERVAL_MS)
+            } else {
+                val remaining = pauseUntilMs - System.currentTimeMillis()
+                if (remaining <= 0L) {
+                    hide()
+                    return
+                }
+                pillView?.setDisplayMs(remaining)
+                handler.postDelayed(this, TICK_INTERVAL_MS)
             }
-            pillView?.setRemainingMs(remaining)
-            handler.postDelayed(this, TICK_INTERVAL_MS)
         }
     }
     private val autoCollapseRunnable = Runnable { collapseOverlay() }
 
     fun show(pauseUntilMs: Long) {
         this.pauseUntilMs = pauseUntilMs
+        this.sessionMode = false
         loadBehaviorPrefs()
         val needsAttach = pillView == null
         if (needsAttach) createOverlay()
@@ -65,7 +74,25 @@ class PauseCountdownOverlayManager(
         if (needsAttach || view.alpha < 1f) {
             startFadeIn(view, waitForNextFrame = needsAttach)
         }
-        view.setRemainingMs(pauseUntilMs - System.currentTimeMillis())
+        view.setDisplayMs(pauseUntilMs - System.currentTimeMillis())
+        handler.removeCallbacks(ticker)
+        handler.postDelayed(ticker, TICK_INTERVAL_MS)
+    }
+
+    fun showSession(startMs: Long) {
+        this.sessionStartMs = startMs
+        this.sessionMode = true
+        this.pauseUntilMs = 0L
+        loadBehaviorPrefs()
+        val needsAttach = pillView == null
+        if (needsAttach) createOverlay()
+        val view = pillView ?: return
+        cancelOverlayAnimation(view)
+        applyShowState()
+        if (needsAttach || view.alpha < 1f) {
+            startFadeIn(view, waitForNextFrame = needsAttach)
+        }
+        view.setDisplayMs(System.currentTimeMillis() - startMs)
         handler.removeCallbacks(ticker)
         handler.postDelayed(ticker, TICK_INTERVAL_MS)
     }
@@ -363,7 +390,7 @@ class PauseCountdownOverlayManager(
     }
 
     private inner class PauseCountdownView(context: Context) : View(context) {
-        private var remainingMs: Long = 0L
+        private var displayMs: Long = 0L
         private var isSnappedLeft: Boolean = false
         private var isExpanded: Boolean = false
 
@@ -398,8 +425,8 @@ class PauseCountdownOverlayManager(
         private val bgRect = RectF()
         private val clipPath = Path()
 
-        fun setRemainingMs(ms: Long) {
-            remainingMs = ms.coerceAtLeast(0L)
+        fun setDisplayMs(ms: Long) {
+            displayMs = ms.coerceAtLeast(0L)
             invalidate()
         }
 
@@ -421,7 +448,7 @@ class PauseCountdownOverlayManager(
             bgRect.set(0f, 0f, w, h)
             canvas.drawRoundRect(bgRect, radius, radius, bgPaint)
 
-            val totalSeconds = remainingMsToDisplaySeconds(remainingMs)
+            val totalSeconds = remainingMsToDisplaySeconds(displayMs)
             val icon = appIcon
             val iconDiameter = icon.width.toFloat()
             val iconPadding = dp(4).toFloat()

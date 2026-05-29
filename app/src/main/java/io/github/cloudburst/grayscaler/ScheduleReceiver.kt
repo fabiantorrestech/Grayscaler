@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import java.text.SimpleDateFormat
@@ -29,12 +30,23 @@ class ScheduleReceiver : BroadcastReceiver() {
             ACTION_TOGGLE_ENABLED -> onToggleEnabled(context)
             ACTION_PAUSE_GRAYSCALER -> onPauseGrayscaler(context)
             ACTION_APPLY_PAUSE -> onApplyPause(context, intent)
+            ACTION_APPLY_SESSION_PAUSE -> onApplySessionPause(context, intent)
             ACTION_PAUSE_END -> onPauseEnd(context)
             ACTION_PAUSE_NOTIFY_COUNTDOWN -> onPauseNotifyCountdown(context, intent)
         }
     }
 
     private fun onBoot(context: Context) {
+        val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+        val pauseType = prefs.getString(PREF_PAUSE_TYPE, "timed") ?: "timed"
+        if (pauseType == "session" || pauseType == "pending_session") {
+            prefs.edit()
+                .putString(PREF_PAUSE_TYPE, "timed")
+                .putString(PREF_SESSION_PAUSE_PKG, "")
+                .putLong(PREF_SESSION_PAUSE_START_MS, 0L)
+                .commit()
+            cancelNotifications(context)
+        }
         val store = ScheduleStore(context)
         store.load()
         ScheduleManager(context).registerAll(store.schedules)
@@ -152,9 +164,45 @@ class ScheduleReceiver : BroadcastReceiver() {
         }
     }
 
+    private fun onApplySessionPause(context: Context, intent: Intent) {
+        val pkg = intent.getStringExtra(EXTRA_SESSION_PKG)
+        val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+
+        cancelPauseEndAlarm(context)
+        cancelPauseNotifyAlarm(context)
+        cancelNotifications(context)
+
+        if (pkg != null) {
+            val startMs = System.currentTimeMillis()
+            prefs.edit()
+                .putString(PREF_PAUSE_TYPE, "session")
+                .putString(PREF_SESSION_PAUSE_PKG, pkg)
+                .putLong(PREF_SESSION_PAUSE_START_MS, startMs)
+                .commit()
+            GrayscaleStateManager.invalidate(context)
+            postSessionActiveNotification(context, pkg, startMs)
+        } else {
+            prefs.edit()
+                .putString(PREF_PAUSE_TYPE, "pending_session")
+                .putString(PREF_SESSION_PAUSE_PKG, "")
+                .putLong(PREF_SESSION_PAUSE_START_MS, 0L)
+                .commit()
+            GrayscaleStateManager.invalidate(context)
+            postSessionPendingNotification(context)
+        }
+
+        GrayscalerWidgetReceiver.cancelTickAlarm(context)
+        GrayscalerWidgetReceiver.triggerUpdate(context)
+    }
+
     private fun onPauseEnd(context: Context) {
         val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
-        prefs.edit().putLong("pause_until", 0L).commit()
+        prefs.edit()
+            .putLong("pause_until", 0L)
+            .putString(PREF_PAUSE_TYPE, "timed")
+            .putString(PREF_SESSION_PAUSE_PKG, "")
+            .putLong(PREF_SESSION_PAUSE_START_MS, 0L)
+            .commit()
 
         cancelPauseEndAlarm(context)
         cancelPauseNotifyAlarm(context)
@@ -179,6 +227,45 @@ class ScheduleReceiver : BroadcastReceiver() {
 
         val cancelPi = buildCancelPausePendingIntent(context)
         postCountdownOrStatic(context, pauseUntil, nm, cancelPi, prefs)
+    }
+
+    private fun postSessionActiveNotification(context: Context, pkg: String, startMs: Long) {
+        if (!hasNotificationPermission(context)) return
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val cancelPi = buildCancelPausePendingIntent(context)
+        val appLabel = try {
+            context.packageManager.getApplicationLabel(
+                context.packageManager.getApplicationInfo(pkg, 0)
+            ).toString()
+        } catch (_: Exception) { pkg }
+        val elapsedMs = System.currentTimeMillis() - startMs
+        val base = SystemClock.elapsedRealtime() - elapsedMs
+        val notif = NotificationCompat.Builder(context, CHANNEL_ID_COUNTDOWN)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Grayscaler+ Paused · $appLabel session")
+            .setUsesChronometer(true)
+            .setChronometerCountDown(false)
+            .setWhen(base)
+            .setShowWhen(true)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .addAction(0, "Cancel Pause", cancelPi)
+            .build()
+        nm.notify(NOTIF_ID_COUNTDOWN, notif)
+    }
+
+    private fun postSessionPendingNotification(context: Context) {
+        if (!hasNotificationPermission(context)) return
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val cancelPi = buildCancelPausePendingIntent(context)
+        val notif = NotificationCompat.Builder(context, CHANNEL_ID_STATIC)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Grayscaler+ · Waiting for next app…")
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .addAction(0, "Cancel", cancelPi)
+            .build()
+        nm.notify(NOTIF_ID_STATIC, notif)
     }
 
     private fun postPauseNotification(context: Context, seconds: Long, pauseUntil: Long, prefs: android.content.SharedPreferences) {
@@ -306,8 +393,15 @@ class ScheduleReceiver : BroadcastReceiver() {
         const val ACTION_TOGGLE_ENABLED = "io.github.cloudburst.grayscaler.ACTION_TOGGLE_ENABLED"
         const val ACTION_PAUSE_GRAYSCALER = "io.github.cloudburst.grayscaler.ACTION_PAUSE_GRAYSCALER"
         const val ACTION_APPLY_PAUSE = "io.github.cloudburst.grayscaler.ACTION_APPLY_PAUSE"
+        const val ACTION_APPLY_SESSION_PAUSE = "io.github.cloudburst.grayscaler.ACTION_APPLY_SESSION_PAUSE"
         const val ACTION_PAUSE_END = "io.github.cloudburst.grayscaler.ACTION_PAUSE_END"
         const val ACTION_PAUSE_NOTIFY_COUNTDOWN = "io.github.cloudburst.grayscaler.ACTION_PAUSE_NOTIFY_COUNTDOWN"
+
+        const val PREF_PAUSE_TYPE = "pause_type"
+        const val PREF_SESSION_PAUSE_PKG = "session_pause_pkg"
+        const val PREF_SESSION_PAUSE_START_MS = "session_pause_start_ms"
+        const val PREF_SESSION_GRACE_PERIOD_MS = "session_grace_period_ms"
+        const val SESSION_GRACE_PERIOD_DEFAULT_MS = 20_000L
 
         const val CHANNEL_ID_STATIC = "grayscaler_pause_static"
         const val CHANNEL_ID_COUNTDOWN = "grayscaler_pause_countdown"
@@ -317,6 +411,7 @@ class ScheduleReceiver : BroadcastReceiver() {
         const val EXTRA_ENABLED = "enabled"
         const val EXTRA_MINUTES = "minutes"
         const val EXTRA_SECONDS = "seconds"
+        const val EXTRA_SESSION_PKG = "session_pkg"
         private const val EXTRA_PAUSE_UNTIL = "pause_until"
 
         private const val PAUSE_END_REQUEST_CODE = 9999
