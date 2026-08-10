@@ -1,0 +1,758 @@
+package io.github.cloudburst.grayscaler
+
+import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityService.ScreenshotResult
+import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.Rect
+import android.os.Build
+import android.util.Log
+import android.view.Display
+import android.view.accessibility.AccessibilityNodeInfo
+import androidx.annotation.RequiresApi
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.max
+
+/**
+ * Walks WhatsApp's accessibility tree for message-status icons, captures one screenshot, and
+ * classifies each candidate as Read / Delivered / Sent via average pixel color inside the node's
+ * screen bounds. Falls back to the contentDescription text when the screenshot is unavailable.
+ */
+class WhatsAppReadIndicatorScanner(
+    private val service: AccessibilityService,
+) {
+    data class Label(val bounds: Rect, val text: String, val isColored: Boolean, val timestamp: String? = null)
+
+    /** A node whose text/contentDescription is a whole-string clock time (e.g. "10:30 PM"). */
+    private data class TimestampNode(val rect: Rect, val time: String)
+
+    fun interface ResultCallback {
+        fun onResult(labels: List<Label>)
+    }
+
+    fun scan(debugDumpDescriptions: Boolean, callback: ResultCallback) {
+        val root = service.rootInActiveWindow
+        if (root == null) {
+            if (debugDumpDescriptions) writeChatListSummary("scan: no rootInActiveWindow")
+            callback.onResult(emptyList())
+            return
+        }
+        val candidates = mutableListOf<Candidate>()
+        val timestampAnchors = mutableListOf<Rect>()
+        // Conversation-view clock timestamps, kept separate from [timestampAnchors] so the new
+        // "<time> • Status" pairing can never perturb the chat-list checkmark search.
+        val conversationTimestamps = mutableListOf<TimestampNode>()
+        val tabHits = mutableSetOf<String>()
+        val convoDebugLines = if (debugDumpDescriptions) mutableListOf<String>() else null
+        try {
+            collectCandidates(root, candidates, timestampAnchors, conversationTimestamps, tabHits, depth = 0, debugDumpDescriptions, convoDebugLines)
+        } finally {
+            root.recycle()
+        }
+        val isChatListView = tabHits.containsAll(REQUIRED_TABS)
+        if (debugDumpDescriptions) {
+            Log.d(TAG, "scan: ${candidates.size} candidates, ${timestampAnchors.size} timestamps, chatList=$isChatListView tabHits=$tabHits")
+            candidates.forEach { Log.d(TAG, "  matched: kind=${it.kind} bounds=${it.bounds}") }
+        }
+        if (candidates.isEmpty() && !(isChatListView && timestampAnchors.isNotEmpty())) {
+            if (debugDumpDescriptions) {
+                if (isChatListView) {
+                    writeChatListSummary(
+                        "scan: no candidates and not a chat list. " +
+                            "tabHits=$tabHits anchors=${timestampAnchors.size}"
+                    )
+                } else {
+                    val header = "scan: 0 accepted candidates, view=conversation, tabHits=$tabHits"
+                    val body = convoDebugLines?.joinToString("\n").orEmpty()
+                    writeConvoSummary(if (body.isEmpty()) header else "$header\n$body")
+                }
+            }
+            callback.onResult(emptyList())
+            return
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            // No screenshot path on older devices — only the contentDescription fallback is usable.
+            // Timestamp pairing is geometry-only, so it still works here.
+            callback.onResult(candidates.map { c ->
+                val label = c.toFallbackLabel()
+                if (isChatListView) label
+                else label.copy(timestamp = pairConversationTimestamp(c.bounds, conversationTimestamps))
+            })
+            return
+        }
+        captureAndClassify(candidates, timestampAnchors, conversationTimestamps, isChatListView, debugDumpDescriptions, convoDebugLines, callback)
+    }
+
+    private fun collectCandidates(
+        node: AccessibilityNodeInfo,
+        out: MutableList<Candidate>,
+        timestampAnchors: MutableList<Rect>,
+        conversationTimestamps: MutableList<TimestampNode>,
+        tabHits: MutableSet<String>,
+        depth: Int,
+        debugDumpDescriptions: Boolean,
+        convoDebugLines: MutableList<String>?,
+    ) {
+        if (depth > MAX_TREE_DEPTH) return
+        // Capture any node whose whole text/desc is a clock time, for conversation-view pairing.
+        collectConversationTimestamp(node, conversationTimestamps)
+        // Diagnostic: with debug dumping on, record every node that carries text or a
+        // contentDescription (capped). Reveals how WhatsApp exposes voice-note / media status,
+        // which is NOT a plain "Read/Delivered/Sent" ImageView like text messages are.
+        if (convoDebugLines != null && convoDebugLines.size < RAW_NODE_DUMP_CAP) {
+            val cd = node.contentDescription?.toString()
+            val tx = node.text?.toString()
+            if (!cd.isNullOrBlank() || !tx.isNullOrBlank()) {
+                val r = Rect()
+                node.getBoundsInScreen(r)
+                val density = service.resources.displayMetrics.density
+                val wdp = if (density > 0f) (r.width() / density).toInt() else r.width()
+                convoDebugLines += "node cls=${shortClassName(node.className)} w=${wdp}dp " +
+                    "b=${r.toShortString()} cd=\"${truncForDebug(cd)}\" tx=\"${truncForDebug(tx)}\""
+            }
+        }
+        val desc = node.contentDescription?.toString()
+        if (!desc.isNullOrBlank()) {
+            if (debugDumpDescriptions) {
+                val short = if (desc.length > 140) desc.substring(0, 140) + "…" else desc
+                Log.d(TAG, "desc: \"$short\" cls=${node.className}")
+            }
+            val kind = classifyContentDescription(desc)
+            if (kind != null) {
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                val density = service.resources.displayMetrics.density
+                val maxStatusWidthPx = (MAX_STATUS_NODE_WIDTH_DP * density).toInt()
+                val widthPx = rect.width()
+                val widthDp = (widthPx / density).toInt()
+                val passWidth = !rect.isEmpty && widthPx <= maxStatusWidthPx
+                if (passWidth) {
+                    out += Candidate(rect, kind)
+                }
+                if (convoDebugLines != null) {
+                    val short = if (desc.length > 80) desc.substring(0, 80) + "…" else desc
+                    val verdict = when {
+                        rect.isEmpty -> "REJECT-empty-bounds"
+                        passWidth -> "ACCEPT"
+                        else -> "REJECT-width(${widthDp}dp > ${MAX_STATUS_NODE_WIDTH_DP}dp)"
+                    }
+                    convoDebugLines += "kind=${kind.label} w=${widthDp}dp bounds=${rect.toShortString()} " +
+                        "cls=${node.className} desc=\"$short\" $verdict"
+                }
+            } else {
+                val trimmed = desc.trim()
+                if (trimmed in REQUIRED_TABS) {
+                    tabHits += trimmed
+                } else if (isTimestampDescription(trimmed)) {
+                    val rect = Rect()
+                    node.getBoundsInScreen(rect)
+                    if (!rect.isEmpty) timestampAnchors += rect
+                }
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            try {
+                collectCandidates(child, out, timestampAnchors, conversationTimestamps, tabHits, depth + 1, debugDumpDescriptions, convoDebugLines)
+            } finally {
+                child.recycle()
+            }
+        }
+    }
+
+    /**
+     * Records this node as a conversation timestamp iff its text or contentDescription is, in its
+     * entirety, a short clock time (e.g. "10:30 PM", "13:45"). The whole-string + length guard
+     * keeps ordinary message bodies that merely mention a time out of the anchor set.
+     */
+    private fun collectConversationTimestamp(node: AccessibilityNodeInfo, out: MutableList<TimestampNode>) {
+        for (value in listOfNotNull(node.text?.toString(), node.contentDescription?.toString())) {
+            val clock = clockTimeIfWholeString(value) ?: continue
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            if (!rect.isEmpty) {
+                out += TimestampNode(rect, clock)
+                return
+            }
+        }
+    }
+
+    private fun clockTimeIfWholeString(value: String): String? {
+        val trimmed = value.trim()
+        if (trimmed.isEmpty() || trimmed.length > 10) return null
+        return if (CLOCK_TIME_PATTERN.matches(trimmed)) trimmed else null
+    }
+
+    private fun truncForDebug(value: String?): String {
+        if (value.isNullOrEmpty()) return ""
+        val oneLine = value.replace('\n', ' ')
+        return if (oneLine.length > 40) oneLine.substring(0, 40) + "…" else oneLine
+    }
+
+    private fun shortClassName(cls: CharSequence?): String =
+        cls?.toString()?.substringAfterLast('.') ?: "?"
+
+    /**
+     * Finds the clock time belonging to the same message row as [status]: the nearest timestamp
+     * node that is vertically aligned with the status icon and sits just to its left (WhatsApp
+     * renders "<time> ✓✓" on one line). Returns null when nothing qualifies, so the chip falls
+     * back to status-only.
+     */
+    private fun pairConversationTimestamp(status: Rect, timestamps: List<TimestampNode>): String? {
+        if (timestamps.isEmpty()) return null
+        val density = service.resources.displayMetrics.density
+        val vTol = max(status.height(), (TIME_ROW_V_TOL_DP * density).toInt())
+        val maxGapPx = (MAX_TIME_STATUS_GAP_DP * density).toInt()
+        val statusCenterY = status.centerY()
+        val statusCenterX = status.centerX()
+        var best: TimestampNode? = null
+        var bestRight = Int.MIN_VALUE
+        for (t in timestamps) {
+            if (abs(t.rect.centerY() - statusCenterY) > vTol) continue   // not the same row
+            if (t.rect.right > statusCenterX) continue                    // not to the left of the icon
+            if (status.left - t.rect.right > maxGapPx) continue           // too far to belong to this row
+            if (t.rect.right > bestRight) {                               // nearest one from the left
+                bestRight = t.rect.right
+                best = t
+            }
+        }
+        return best?.time
+    }
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    private fun captureAndClassify(
+        candidates: List<Candidate>,
+        timestampAnchors: List<Rect>,
+        conversationTimestamps: List<TimestampNode>,
+        isChatListView: Boolean,
+        debug: Boolean,
+        convoDebugLines: MutableList<String>?,
+        callback: ResultCallback,
+    ) {
+        try {
+            service.takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                service.mainExecutor,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: ScreenshotResult) {
+                        val hb = screenshot.hardwareBuffer
+                        try {
+                            val hw = Bitmap.wrapHardwareBuffer(hb, screenshot.colorSpace)
+                            val sw = hw?.copy(Bitmap.Config.ARGB_8888, false)
+                            if (sw == null) {
+                                if (debug) writeChatListSummary("screenshot bitmap copy failed")
+                                callback.onResult(candidates.map { it.toFallbackLabel() })
+                                return
+                            }
+                            val labels = mutableListOf<Label>()
+                            for (c in candidates) {
+                                var label = classifyByPixels(sw, c, convoDebugLines)
+                                if (!isChatListView) {
+                                    val time = pairConversationTimestamp(c.bounds, conversationTimestamps)
+                                    label = label.copy(timestamp = time)
+                                    convoDebugLines?.add(
+                                        "  time-pair[${c.kind.label}]: ${time ?: "none"} " +
+                                            "(status=${c.bounds.toShortString()}, ${conversationTimestamps.size} ts nodes)"
+                                    )
+                                }
+                                labels += label
+                            }
+                            // Chat-list path is only used when we found no accessibility-tagged
+                            // status nodes — i.e. we're on the chat list, where WhatsApp omits
+                            // status from the accessibility tree entirely.
+                            if (isChatListView && candidates.isEmpty()) {
+                                labels += scanChatListPreviews(sw, timestampAnchors, debug)
+                            }
+                            sw.recycle()
+                            if (debug && !isChatListView && convoDebugLines != null) {
+                                val header = "scan: ${candidates.size} accepted candidates, view=conversation, labels=${labels.size}"
+                                writeConvoSummary("$header\n" + convoDebugLines.joinToString("\n"))
+                            }
+                            callback.onResult(labels)
+                        } finally {
+                            hb.close()
+                        }
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        Log.d(TAG, "takeScreenshot failed code=$errorCode — using contentDescription fallback")
+                        if (debug) writeChatListSummary("takeScreenshot failed code=$errorCode")
+                        callback.onResult(candidates.map { it.toFallbackLabel() })
+                    }
+                }
+            )
+        } catch (t: Throwable) {
+            Log.d(TAG, "takeScreenshot threw ${t.javaClass.simpleName} — using contentDescription fallback")
+            if (debug) writeChatListSummary("takeScreenshot threw ${t.javaClass.simpleName}")
+            callback.onResult(candidates.map { it.toFallbackLabel() })
+        }
+    }
+
+    /**
+     * Pixel-only path used on the chat-list screen, where WhatsApp does not expose any
+     * read/delivered/sent contentDescription. For each timestamp row anchor, examine a narrow
+     * vertical strip in the message-preview line just to the right of the avatar — that's where
+     * the leading ✓✓ icon lives if the row's last message was outgoing.
+     */
+    private fun scanChatListPreviews(bmp: Bitmap, anchors: List<Rect>, debug: Boolean): List<Label> {
+        val density = service.resources.displayMetrics.density
+        val avatarRightPx = (AVATAR_END_DP * density).toInt()
+        val searchWidthPx = (CHECKMARK_SEARCH_WIDTH_DP * density).toInt()
+        val previewTopOffsetPx = (PREVIEW_LINE_TOP_OFFSET_DP * density).toInt()
+        val previewBottomOffsetPx = (PREVIEW_LINE_BOTTOM_OFFSET_DP * density).toInt()
+        val maxIconWidthPx = (MAX_CHATLIST_ICON_WIDTH_DP * density).toInt()
+        val minIconWidthPx = (MIN_CHATLIST_ICON_WIDTH_DP * density).toInt()
+
+        val labels = mutableListOf<Label>()
+        val summaryLines = mutableListOf<String>()
+        if (debug) {
+            summaryLines += "density=$density bmp=${bmp.width}x${bmp.height}"
+            summaryLines += "geom: avatarRight=${avatarRightPx} searchW=${searchWidthPx} " +
+                "topOff=${previewTopOffsetPx} botOff=${previewBottomOffsetPx} " +
+                "iconW=${minIconWidthPx}..${maxIconWidthPx}"
+            summaryLines += "anchors=${anchors.size}"
+        }
+
+        for ((index, anchor) in anchors.withIndex()) {
+            val region = Rect(
+                avatarRightPx,
+                anchor.bottom + previewTopOffsetPx,
+                avatarRightPx + searchWidthPx,
+                anchor.bottom + previewBottomOffsetPx,
+            )
+            val blob = findLeadingIconBox(bmp, region)
+            val line = StringBuilder()
+            if (debug) {
+                line.append("[$index] anchor=${anchor.toShortString()} region=${region.toShortString()} ")
+                line.append("bgRgb=#${"%02X%02X%02X".format(
+                    Color.red(blob.bgRgb), Color.green(blob.bgRgb), Color.blue(blob.bgRgb)
+                )} ")
+            }
+            val box = blob.bbox
+            if (box == null) {
+                if (debug) {
+                    line.append("REJECT: ${blob.rejectReason ?: "no-blob"}")
+                    Log.d(TAG, line.toString())
+                    summaryLines += line.toString()
+                }
+                continue
+            }
+            val iconW = box.width()
+            if (iconW < minIconWidthPx || iconW > maxIconWidthPx) {
+                if (debug) {
+                    line.append("REJECT: iconW=${iconW} not in ${minIconWidthPx}..${maxIconWidthPx} (box=${box.toShortString()})")
+                    Log.d(TAG, line.toString())
+                    summaryLines += line.toString()
+                }
+                continue
+            }
+
+            val color = averageColor(bmp, box)
+            val ar = Color.red(color)
+            val ag = Color.green(color)
+            val ab = Color.blue(color)
+            val delta = max(max(abs(ar - ag), abs(ag - ab)), abs(ar - ab))
+            val isColored = delta > COLOR_DELTA_THRESHOLD
+            val aspect = iconW.toFloat() / box.height().coerceAtLeast(1)
+            val text = when {
+                isColored && ab > ar && ab > ag -> "Read"
+                aspect >= DOUBLE_CHECK_ASPECT_THRESHOLD -> "Delivered"
+                else -> "Sent"
+            }
+            labels += Label(box, text, isColored)
+            if (debug) {
+                line.append("ACCEPT: box=${box.toShortString()} ar=$ar ag=$ag ab=$ab delta=$delta aspect=${"%.2f".format(aspect)} -> $text")
+                Log.d(TAG, line.toString())
+                summaryLines += line.toString()
+            }
+        }
+
+        if (debug) {
+            summaryLines += "labels emitted=${labels.size}"
+            writeChatListSummary(summaryLines.joinToString("\n"))
+        }
+        return labels
+    }
+
+    private fun writeChatListSummary(summary: String) {
+        val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+        try {
+            service.getSharedPreferences("grayscaler_prefs", android.content.Context.MODE_PRIVATE)
+                .edit()
+                .putString(PREF_WHATSAPP_CHATLIST_DEBUG, "$ts\n$summary")
+                .apply()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun writeConvoSummary(summary: String) {
+        val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+        try {
+            service.getSharedPreferences("grayscaler_prefs", android.content.Context.MODE_PRIVATE)
+                .edit()
+                .putString(PREF_WHATSAPP_CONVO_DEBUG, "$ts\n$summary")
+                .apply()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun averageColor(bmp: Bitmap, rect: Rect): Int {
+        val w = bmp.width
+        val h = bmp.height
+        val x0 = rect.left.coerceIn(0, w - 1)
+        val x1 = rect.right.coerceIn(0, w - 1)
+        val y0 = rect.top.coerceIn(0, h - 1)
+        val y1 = rect.bottom.coerceIn(0, h - 1)
+        var sumR = 0L
+        var sumG = 0L
+        var sumB = 0L
+        var n = 0L
+        val stepX = max(1, (x1 - x0) / SAMPLE_STRIDE)
+        val stepY = max(1, (y1 - y0) / SAMPLE_STRIDE)
+        var y = y0
+        while (y <= y1) {
+            var x = x0
+            while (x <= x1) {
+                val c = bmp.getPixel(x, y)
+                sumR += Color.red(c); sumG += Color.green(c); sumB += Color.blue(c)
+                n++
+                x += stepX
+            }
+            y += stepY
+        }
+        if (n == 0L) return Color.GRAY
+        return Color.rgb((sumR / n).toInt(), (sumG / n).toInt(), (sumB / n).toInt())
+    }
+
+    private fun isTimestampDescription(value: String): Boolean {
+        if (value.length > 32) return false
+        return TIMESTAMP_PATTERNS.any { it.matches(value) }
+    }
+
+    private fun classifyByPixels(
+        bmp: Bitmap,
+        candidate: Candidate,
+        convoDebugLines: MutableList<String>? = null,
+    ): Label {
+        // Find the actual visible icon inside the (often over-padded) accessibility node bounds.
+        val iconBox = findVisibleIconBox(bmp, candidate.bounds)
+        val sampleRect = iconBox ?: candidate.bounds
+        val labelBounds = iconBox ?: candidate.bounds
+
+        val w = bmp.width
+        val h = bmp.height
+        // Color-sample an inset block at the centre of the (smaller, icon-tight) region.
+        val insetX = max(1, sampleRect.width() / 5)
+        val insetY = max(1, sampleRect.height() / 5)
+        val x0 = (sampleRect.left + insetX).coerceIn(0, w - 1)
+        val x1 = (sampleRect.right - insetX).coerceIn(0, w - 1)
+        val y0 = (sampleRect.top + insetY).coerceIn(0, h - 1)
+        val y1 = (sampleRect.bottom - insetY).coerceIn(0, h - 1)
+        if (x1 <= x0 || y1 <= y0) {
+            return Label(labelBounds, candidate.kind.label, isColored = candidate.kind == Kind.READ)
+        }
+
+        var sumR = 0L
+        var sumG = 0L
+        var sumB = 0L
+        var n = 0L
+        val stepX = max(1, (x1 - x0) / SAMPLE_STRIDE)
+        val stepY = max(1, (y1 - y0) / SAMPLE_STRIDE)
+        var y = y0
+        while (y <= y1) {
+            var x = x0
+            while (x <= x1) {
+                val c = bmp.getPixel(x, y)
+                sumR += Color.red(c)
+                sumG += Color.green(c)
+                sumB += Color.blue(c)
+                n++
+                x += stepX
+            }
+            y += stepY
+        }
+        if (n == 0L) {
+            return Label(labelBounds, candidate.kind.label, isColored = candidate.kind == Kind.READ)
+        }
+
+        val ar = (sumR / n).toInt()
+        val ag = (sumG / n).toInt()
+        val ab = (sumB / n).toInt()
+        val delta = max(max(abs(ar - ag), abs(ag - ab)), abs(ar - ab))
+        val isColored = delta > COLOR_DELTA_THRESHOLD
+        val text = when {
+            isColored && ab > ar && ab > ag -> "Read"
+            isColored -> candidate.kind.label
+            else -> candidate.kind.label
+        }
+        if (convoDebugLines != null) {
+            val iconLabel = iconBox?.toShortString() ?: "null(fallback-to-bounds)"
+            convoDebugLines += "  classify[${candidate.kind.label}]: iconBox=$iconLabel " +
+                "rgb=($ar,$ag,$ab) delta=$delta colored=$isColored -> $text"
+        }
+        return Label(labelBounds, text, isColored)
+    }
+
+    /**
+     * Find the bounding rectangle of pixels inside [bounds] that differ meaningfully from the
+     * background sampled at the four corners. WhatsApp's accessibility node bounds often include
+     * tap-target padding around (and especially below) the visible checkmark; this trims to the
+     * actual painted icon, which positions chips correctly and tightens color sampling.
+     */
+    private fun findVisibleIconBox(bmp: Bitmap, bounds: Rect): Rect? {
+        val blob = detectBlob(bmp, bounds)
+        if (blob.bbox == null) return null
+        if (blob.areaFrac < MIN_ICON_AREA_FRAC) return null
+        return blob.bbox
+    }
+
+    private data class BlobResult(val bbox: Rect?, val areaFrac: Float, val bgRgb: Int)
+
+    private data class LeadingBlobResult(val bbox: Rect?, val bgRgb: Int, val rejectReason: String?)
+
+    /**
+     * Chat-list-specialised blob detector. Walks columns left→right inside [region], picks the
+     * first run of "filled" (non-background) columns, and terminates the blob the first time
+     * [GAP_TOLERANCE_PX] consecutive background columns appear. Returns the leading blob only —
+     * any trailing preview text in the same row is ignored.
+     *
+     * Background is estimated by taking the channel-wise median across the first
+     * [BG_SAMPLE_COLUMNS] columns of [region], which sit between the avatar and the icon and
+     * are reliably empty padding. This avoids the corner-pixel-averaging failure mode of
+     * [detectBlob] (text touching a corner skews bg → union bbox spans the whole row).
+     */
+    private fun findLeadingIconBox(bmp: Bitmap, region: Rect): LeadingBlobResult {
+        val w = bmp.width
+        val h = bmp.height
+        val x0 = region.left.coerceIn(0, w - 1)
+        val x1 = region.right.coerceIn(0, w - 1)
+        val y0 = region.top.coerceIn(0, h - 1)
+        val y1 = region.bottom.coerceIn(0, h - 1)
+        val regionW = x1 - x0 + 1
+        val regionH = y1 - y0 + 1
+        if (regionW <= BG_SAMPLE_COLUMNS + 2 || regionH <= 2) {
+            return LeadingBlobResult(null, Color.GRAY, "region-too-small")
+        }
+
+        val pixels = IntArray(regionW * regionH)
+        bmp.getPixels(pixels, 0, regionW, x0, y0, regionW, regionH)
+
+        // Channel-wise median bg over the leftmost BG_SAMPLE_COLUMNS columns.
+        val sampleCount = BG_SAMPLE_COLUMNS * regionH
+        val rSamples = IntArray(sampleCount)
+        val gSamples = IntArray(sampleCount)
+        val bSamples = IntArray(sampleCount)
+        var n = 0
+        for (y in 0 until regionH) {
+            val base = y * regionW
+            for (x in 0 until BG_SAMPLE_COLUMNS) {
+                val c = pixels[base + x]
+                rSamples[n] = Color.red(c)
+                gSamples[n] = Color.green(c)
+                bSamples[n] = Color.blue(c)
+                n++
+            }
+        }
+        rSamples.sort(); gSamples.sort(); bSamples.sort()
+        val bgR = rSamples[n / 2]
+        val bgG = gSamples[n / 2]
+        val bgB = bSamples[n / 2]
+        val bgRgb = Color.rgb(bgR, bgG, bgB)
+
+        val columnFilled = BooleanArray(regionW)
+        for (x in 0 until regionW) {
+            for (y in 0 until regionH) {
+                val c = pixels[y * regionW + x]
+                val d = abs(Color.red(c) - bgR) + abs(Color.green(c) - bgG) + abs(Color.blue(c) - bgB)
+                if (d > BG_DELTA_THRESHOLD) {
+                    columnFilled[x] = true
+                    break
+                }
+            }
+        }
+
+        var xStart = -1
+        for (x in 0 until regionW) {
+            if (columnFilled[x]) { xStart = x; break }
+        }
+        if (xStart < 0) return LeadingBlobResult(null, bgRgb, "no-leading-blob")
+
+        var xEnd = xStart
+        var gap = 0
+        for (x in xStart + 1 until regionW) {
+            if (columnFilled[x]) {
+                xEnd = x
+                gap = 0
+            } else {
+                gap++
+                if (gap >= GAP_TOLERANCE_PX) break
+            }
+        }
+
+        var minY = regionH
+        var maxY = -1
+        for (y in 0 until regionH) {
+            for (x in xStart..xEnd) {
+                val c = pixels[y * regionW + x]
+                val d = abs(Color.red(c) - bgR) + abs(Color.green(c) - bgG) + abs(Color.blue(c) - bgB)
+                if (d > BG_DELTA_THRESHOLD) {
+                    if (y < minY) minY = y
+                    if (y > maxY) maxY = y
+                    break
+                }
+            }
+        }
+        if (maxY < minY) return LeadingBlobResult(null, bgRgb, "no-pixels-in-blob")
+
+        return LeadingBlobResult(
+            Rect(x0 + xStart, y0 + minY, x0 + xEnd + 1, y0 + maxY + 1),
+            bgRgb,
+            null,
+        )
+    }
+
+    /**
+     * Raw blob detector. Returns the bounding rectangle of pixels inside [bounds] that differ
+     * meaningfully from the four-corner-averaged background, alongside the area fraction and the
+     * estimated background RGB. Callers may apply their own minimum-area-fraction sanity check
+     * (see [MIN_ICON_AREA_FRAC] for the standard one used by [findVisibleIconBox]).
+     */
+    private fun detectBlob(bmp: Bitmap, bounds: Rect): BlobResult {
+        val w = bmp.width
+        val h = bmp.height
+        val x0 = bounds.left.coerceIn(0, w - 1)
+        val x1 = bounds.right.coerceIn(0, w - 1)
+        val y0 = bounds.top.coerceIn(0, h - 1)
+        val y1 = bounds.bottom.coerceIn(0, h - 1)
+        val regionW = x1 - x0 + 1
+        val regionH = y1 - y0 + 1
+        if (regionW <= 2 || regionH <= 2) return BlobResult(null, 0f, Color.GRAY)
+
+        val pixels = IntArray(regionW * regionH)
+        bmp.getPixels(pixels, 0, regionW, x0, y0, regionW, regionH)
+
+        // Background estimate: average of the four corner pixels of the region.
+        val cTL = pixels[0]
+        val cTR = pixels[regionW - 1]
+        val cBL = pixels[(regionH - 1) * regionW]
+        val cBR = pixels[regionH * regionW - 1]
+        val bgR = (Color.red(cTL) + Color.red(cTR) + Color.red(cBL) + Color.red(cBR)) / 4
+        val bgG = (Color.green(cTL) + Color.green(cTR) + Color.green(cBL) + Color.green(cBR)) / 4
+        val bgB = (Color.blue(cTL) + Color.blue(cTR) + Color.blue(cBL) + Color.blue(cBR)) / 4
+        val bgRgb = Color.rgb(bgR, bgG, bgB)
+
+        var minX = regionW
+        var maxX = -1
+        var minY = regionH
+        var maxY = -1
+        for (y in 0 until regionH) {
+            val rowBase = y * regionW
+            for (x in 0 until regionW) {
+                val c = pixels[rowBase + x]
+                val d = abs(Color.red(c) - bgR) + abs(Color.green(c) - bgG) + abs(Color.blue(c) - bgB)
+                if (d > BG_DELTA_THRESHOLD) {
+                    if (x < minX) minX = x
+                    if (x > maxX) maxX = x
+                    if (y < minY) minY = y
+                    if (y > maxY) maxY = y
+                }
+            }
+        }
+        if (maxX < minX || maxY < minY) return BlobResult(null, 0f, bgRgb)
+
+        val detectedW = maxX - minX + 1
+        val detectedH = maxY - minY + 1
+        val areaFrac = (detectedW * detectedH).toFloat() / (regionW * regionH)
+        val bbox = Rect(x0 + minX, y0 + minY, x0 + maxX + 1, y0 + maxY + 1)
+        return BlobResult(bbox, areaFrac, bgRgb)
+    }
+
+    private fun classifyContentDescription(desc: String): Kind? {
+        // Word-boundary match so chat-list rows whose contentDescription embeds the keyword in a
+        // longer string (e.g. "Last message: yes!! ^_^, Read") still classify. False positives are
+        // mitigated by the pixel-localization step, which bails on bounds with no visible icon.
+        return when {
+            READ_PATTERN.containsMatchIn(desc) -> Kind.READ
+            DELIVERED_PATTERN.containsMatchIn(desc) -> Kind.DELIVERED
+            SENT_PATTERN.containsMatchIn(desc) -> Kind.SENT
+            else -> null
+        }
+    }
+
+    private data class Candidate(val bounds: Rect, val kind: Kind) {
+        fun toFallbackLabel(): Label = Label(bounds, kind.label, isColored = kind == Kind.READ)
+    }
+
+    private enum class Kind(val label: String) {
+        READ("Read"),
+        DELIVERED("Delivered"),
+        SENT("Sent");
+    }
+
+    companion object {
+        const val PREF_WHATSAPP_CHATLIST_DEBUG = "whatsapp_chatlist_debug"
+        const val PREF_WHATSAPP_CONVO_DEBUG = "whatsapp_convo_debug"
+        private const val TAG = "WhatsAppScanner"
+        private const val MAX_TREE_DEPTH = 64
+        private const val SAMPLE_STRIDE = 6
+        private const val COLOR_DELTA_THRESHOLD = 12
+        private const val BG_DELTA_THRESHOLD = 60  // sum-of-channel-deltas vs corner background
+        private const val MIN_ICON_AREA_FRAC = 0.003f  // ignore noise blobs in mostly-empty bounds
+
+        // Word-boundary regex match. Localizable: add alternates inside the alternation group
+        // (e.g. "(?:read|leído|lu)") if other languages report missing labels.
+        // Negative lookahead on (more|less) excludes WhatsApp's "Read more" / "Read less" expander
+        // on long incoming messages, which would otherwise be classified as a Read status by the
+        // pixel-color path (the expander is blue text).
+        private val READ_PATTERN = Regex("\\bread\\b(?!\\s+(?:more|less))", RegexOption.IGNORE_CASE)
+        private val DELIVERED_PATTERN = Regex("\\b(?:delivered)\\b", RegexOption.IGNORE_CASE)
+        private val SENT_PATTERN = Regex("\\b(?:sent)\\b", RegexOption.IGNORE_CASE)
+
+        // Backstop for the "Read more" false positive in case the regex misses a localized variant:
+        // status icons are tiny ImageView nodes (~12-18dp wide); any candidate whose bounds exceed
+        // this width is almost certainly a TextView (e.g. "Read more" expander) and gets rejected.
+        private const val MAX_STATUS_NODE_WIDTH_DP = 40
+
+        // Chat-list view signals — presence of all four tab descriptions confirms we're on
+        // the chat list (not inside a conversation), where WhatsApp omits status from a11y.
+        private val REQUIRED_TABS = setOf("Chats", "Updates", "Communities", "Calls")
+
+        // Conversation-view "<time> • Status" pairing. A whole-string clock time (12- or 24-hour)
+        // identifies a timestamp node; a paired timestamp must be within these bounds of the status
+        // icon (same row, just to its left).
+        private val CLOCK_TIME_PATTERN = Regex("""\d{1,2}:\d{2}\s?(?:[AaPp][Mm])?""")
+        private const val MAX_TIME_STATUS_GAP_DP = 72
+        private const val TIME_ROW_V_TOL_DP = 14
+
+        // Cap on the number of raw tree nodes recorded into the conversation debug dump.
+        private const val RAW_NODE_DUMP_CAP = 160
+
+        // Per-row timestamp patterns used as anchors for chat-list pixel detection.
+        private val TIMESTAMP_PATTERNS = listOf(
+            Regex("""^\d{1,2}:\d{2}\s?(?:AM|PM|am|pm)?$"""),
+            Regex("""^[A-Z][a-z]+\s\d{1,2}(?:,\s\d{4})?$"""),
+            Regex("""^(?:Yesterday|Today)$"""),
+            Regex("""^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$"""),
+        )
+
+        // Chat-list checkmark search-region geometry (dp units; converted with display density).
+        private const val AVATAR_END_DP = 72
+        private const val CHECKMARK_SEARCH_WIDTH_DP = 32
+        private const val PREVIEW_LINE_TOP_OFFSET_DP = 2
+        private const val PREVIEW_LINE_BOTTOM_OFFSET_DP = 36
+        private const val MIN_CHATLIST_ICON_WIDTH_DP = 6
+        private const val MAX_CHATLIST_ICON_WIDTH_DP = 28
+        private const val DOUBLE_CHECK_ASPECT_THRESHOLD = 1.3f
+
+        // Chat-list leading-blob detector tunables. BG_SAMPLE_COLUMNS = how many leftmost columns
+        // (just past the avatar) to median for the bg estimate. GAP_TOLERANCE_PX = how many
+        // consecutive bg-coloured columns terminate the leading blob (separates the icon from
+        // following preview text).
+        private const val BG_SAMPLE_COLUMNS = 4
+        private const val GAP_TOLERANCE_PX = 4
+    }
+}

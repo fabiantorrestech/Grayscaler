@@ -47,7 +47,17 @@ object GrayscaleStateManager {
             return
         }
 
-        val pkg = lastMeaningfulPkg ?: prefs.getString(PREF_LAST_MEANINGFUL_PKG, null) ?: return
+        val pkg = lastMeaningfulPkg ?: prefs.getString(PREF_LAST_MEANINGFUL_PKG, null)
+        if (pkg == null) {
+            // No foreground app is known yet (fresh process, lockscreen, toggled on from a tile/
+            // widget before any window event). Pause is off, the master switch is on, and bedtime
+            // isn't active, so the documented default — grayscale on — is the correct global
+            // fallback. Returning without applying here is the "tile shows ON but display is in
+            // color" desync.
+            GrayscaleLog.log(context, "invalidate", "no known foreground -> default ENABLE")
+            applyToSystem(context, Decision.ENABLE)
+            return
+        }
         val cls = lastMeaningfulClassName.ifEmpty { prefs.getString(PREF_LAST_MEANINGFUL_CLASS, "") ?: "" }
         // SKIP means the last foreground was a system/overlay app that shouldn't gate grayscale state.
         // At this point we know pause is off, grayscaler is enabled, and bedtime isn't active — default to ENABLE.
@@ -132,13 +142,76 @@ object GrayscaleStateManager {
 
     fun applyToSystem(context: Context, decision: Decision) {
         if (decision == Decision.SKIP) return
-        lastDecision = decision
-        if (decision == Decision.ENABLE) {
-            Settings.Secure.putInt(context.contentResolver, MainService.DISPLAY_DALTONIZER, MainService.MONOCHROME)
-            Settings.Secure.putInt(context.contentResolver, MainService.DISPLAY_DALTONIZER_ENABLED, MainService.ON)
-        } else {
-            Settings.Secure.putInt(context.contentResolver, MainService.DISPLAY_DALTONIZER_ENABLED, MainService.OFF)
+        val resolver = context.contentResolver
+        try {
+            if (decision == Decision.ENABLE) {
+                // RC6 diagnostic: writing ENABLED=1 while it's already 1 is a no-op that won't
+                // re-fire the system's color observer, so a dropped transform stays dropped. When
+                // the dev toggle is on, force a 0 -> 1 transition first (may briefly flash to color).
+                if (GrayscaleLog.forceRetoggle(context)) {
+                    val curEnabled = Settings.Secure.getInt(resolver, MainService.DISPLAY_DALTONIZER_ENABLED, -1)
+                    val curMode = Settings.Secure.getInt(resolver, MainService.DISPLAY_DALTONIZER, -1)
+                    if (curEnabled == MainService.ON) {
+                        Settings.Secure.putInt(resolver, MainService.DISPLAY_DALTONIZER_ENABLED, MainService.OFF)
+                        GrayscaleLog.log(
+                            context,
+                            "retoggle",
+                            "forced OFF before re-ENABLE (was enabled=$curEnabled mode=$curMode) caller=${GrayscaleLog.caller()}"
+                        )
+                    }
+                }
+                Settings.Secure.putInt(resolver, MainService.DISPLAY_DALTONIZER, MainService.MONOCHROME)
+                Settings.Secure.putInt(resolver, MainService.DISPLAY_DALTONIZER_ENABLED, MainService.ON)
+            } else {
+                Settings.Secure.putInt(resolver, MainService.DISPLAY_DALTONIZER_ENABLED, MainService.OFF)
+            }
+            // Record the belief only after the write actually succeeded. Setting it beforehand let
+            // the app's notion of "on" diverge from the screen when the write threw — a root cause
+            // of the stuck-in-color bug.
+            lastDecision = decision
+            logApplyOutcome(context, decision)
+        } catch (t: Throwable) {
+            // Most likely WRITE_SECURE_SETTINGS was revoked. Leave lastDecision untouched and
+            // surface the failure instead of silently desyncing or crashing the caller (this runs
+            // from accessibility-event and onResume paths that previously had no try/catch).
+            GrayscaleLog.log(
+                context,
+                "apply",
+                "WRITE FAILED decision=$decision ${t.javaClass.simpleName}: ${t.message} caller=${GrayscaleLog.caller()}"
+            )
         }
+    }
+
+    /**
+     * Reads the Secure settings straight back after a write and logs whether the screen actually
+     * matches the requested decision. A `MISMATCH` line means the write was accepted but the value
+     * didn't stick (or an external actor changed it) — the evidence we need for the stuck-in-color
+     * reports. No-op unless diagnostic logging is enabled.
+     */
+    private fun logApplyOutcome(context: Context, decision: Decision) {
+        if (!GrayscaleLog.isEnabled(context)) return
+        try {
+            val resolver = context.contentResolver
+            val actualEnabled = Settings.Secure.getInt(resolver, MainService.DISPLAY_DALTONIZER_ENABLED, -1)
+            val actualMode = Settings.Secure.getInt(resolver, MainService.DISPLAY_DALTONIZER, -1)
+            val expectEnabled = if (decision == Decision.ENABLE) MainService.ON else MainService.OFF
+            val consistent = actualEnabled == expectEnabled &&
+                (decision != Decision.ENABLE || actualMode == MainService.MONOCHROME)
+            GrayscaleLog.log(
+                context,
+                "apply",
+                "decision=$decision readback[enabled=$actualEnabled mode=$actualMode] " +
+                    (if (consistent) "OK" else "MISMATCH") + " caller=${GrayscaleLog.caller()}"
+            )
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Last app GrayscaleStateManager considered meaningful (in-memory, else persisted). */
+    fun lastMeaningfulForegroundPkg(context: Context): String? {
+        return lastMeaningfulPkg ?: context
+            .getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+            .getString(PREF_LAST_MEANINGFUL_PKG, null)
     }
 
     fun applySystemEventMode(context: Context, mode: String): Boolean {

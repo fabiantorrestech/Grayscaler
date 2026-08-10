@@ -1,0 +1,20 @@
+# Normalize all text files to LF in the repository. Working-tree files keep
+# whatever the editor writes (Android Studio on Windows uses CRLF); git strips
+# the CR on the way in, so the CRLF-vs-LF churn never reaches a commit again.
+* text=auto eol=lf
+
+# Windows batch scripts must keep CRLF in the working tree or cmd.exe chokes.
+*.bat text eol=crlf
+
+# Shell scripts and the Gradle wrapper must stay LF even on Windows checkouts.
+*.sh text eol=lf
+gradlew text eol=lf
+
+# Never run EOL conversion on these.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.jar binary
+*.keystore binary
+*.jks binary
