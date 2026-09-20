@@ -1,0 +1,92 @@
+name: Build debug APK
+
+# Builds a debug APK on every push to the working branches and on demand, so a test build can be
+# downloaded straight to a phone without a PC.
+#
+# Where to get it:
+#   - Rolling prerelease "ci-latest" on the Releases page: a direct .apk link, best on a phone.
+#   - The run's "Artifacts" section: the same APK inside a zip (requires being signed in).
+#
+# Signing: by default each run signs with a throwaway debug key, so a CI build will NOT install
+# over a build signed with a different key (uninstall first, or export a backup in the app).
+# To make every CI build installable over builds from your PC, add one repository secret:
+#   DEBUG_KEYSTORE_BASE64 = base64 of your PC's %USERPROFILE%\.android\debug.keystore
+# The workflow drops it where the Android Gradle Plugin looks for the debug key by default.
+
+on:
+  push:
+    branches: [improvements_branch, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Gradle 8.x in this project cannot run on JDK 25+, so pin the build JDK.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Use shared debug keystore if provided
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
+            mkdir -p "$HOME/.android"
+            echo "$DEBUG_KEYSTORE_BASE64" | base64 -d > "$HOME/.android/debug.keystore"
+            echo "Using debug keystore from repository secret."
+          else
+            echo "No DEBUG_KEYSTORE_BASE64 secret: signing with a throwaway debug key."
+          fi
+
+      - name: Build debug APK
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleDebug --console=plain
+
+      - name: Name the APK
+        id: apk
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          branch="${GITHUB_REF_NAME//\//-}"
+          out="grayscalerplus-${branch}-${short_sha}-debug.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "$out"
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.file }}
+          path: ${{ steps.apk.outputs.file }}
+          retention-days: 30
+
+      # Rolling prerelease with a direct .apk download. Skipped for pull requests, whose token is
+      # read-only when they come from forks.
+      - name: Publish rolling test prerelease
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK: ${{ steps.apk.outputs.file }}
+        run: |
+          notes="Automated debug build of ${GITHUB_REF_NAME} at ${GITHUB_SHA}. For testing only. Replaced on every push."
+          gh release delete ci-latest --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+          gh release create ci-latest "$APK" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Test build (${GITHUB_REF_NAME} ${{ steps.apk.outputs.short_sha }})" \
+            --notes "$notes"
