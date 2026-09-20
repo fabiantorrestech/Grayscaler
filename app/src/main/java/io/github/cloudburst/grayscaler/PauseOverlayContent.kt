@@ -20,9 +20,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.OpenInNew
@@ -73,6 +76,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -271,7 +276,12 @@ fun PauseOverlayContent(
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null
-                ) { dismissAfter() },
+                ) { dismissAfter() }
+                // Padding comes after background/clickable, so the dim still covers the whole
+                // screen while the card stays clear of system bars, the display cutout and the
+                // keyboard (safeDrawing includes the IME), with a margin at every edge.
+                .safeDrawingPadding()
+                .padding(16.dp),
             contentAlignment = Alignment.Center
         ) {
             Surface(
@@ -298,9 +308,14 @@ fun PauseOverlayContent(
                 color = MaterialTheme.colorScheme.background,
                 tonalElevation = 0.dp
             ) {
+                // The scrim bounds the card to the space that is actually available. Whatever does
+                // not fit scrolls, so no control can be clipped off in a short landscape window or
+                // at a large font scale.
                 Column(
-                    modifier = Modifier.padding(24.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                    modifier = Modifier
+                        .verticalScroll(rememberScrollState())
+                        .padding(if (isLandscape) 16.dp else 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (isLandscape) 12.dp else 16.dp)
                 ) {
                     if (confirmingPauseSeconds != null || confirmingSession) {
                         Text("Replace active pause?", style = MaterialTheme.typography.titleLarge)
@@ -371,71 +386,103 @@ fun PauseOverlayContent(
                         else -> MaterialTheme.colorScheme.onSurfaceVariant
                     }
 
+                    val showCancel = isPaused || isSessionActive || isPendingSession
+                    val onCancelPause: () -> Unit = {
+                        dismissAfter {
+                            cancelPause()
+                            pauseUntil = 0L
+                            now = System.currentTimeMillis()
+                            lastDecision = GrayscaleStateManager.lastDecision
+                        }
+                    }
+                    val onOpenAppClick: () -> Unit = { dismissAfter(PauseOverlayExitAction.OpenApp) }
+                    val onRefreshClick: () -> Unit = {
+                        grayscalerEnabled = GrayscalerToggleCoordinator.isEnabled(context)
+                        pauseUntil = prefs.getLong("pause_until", 0L)
+                        pauseType = prefs.getString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed") ?: "timed"
+                        now = System.currentTimeMillis()
+                        lastDecision = GrayscaleStateManager.lastDecision
+                    }
+                    val onToggleGlobal: (Boolean) -> Unit = { enabled ->
+                        GrayscalerToggleCoordinator.setEnabled(context, enabled, "popup_switch")
+                        grayscalerEnabled = enabled
+                        lastDecision = GrayscaleStateManager.lastDecision
+                    }
+                    val onApplyCustom: () -> Unit = apply@{
+                        val value = customValue.toLongOrNull() ?: return@apply
+                        val seconds = when (selectedUnit) {
+                            "Hours" -> value * 3600L
+                            "Minutes" -> value * 60L
+                            else -> value
+                        }
+                        if (seconds > 0) applyPauseOrConfirm(seconds)
+                    }
+                    val sessionEnabled = !lastMeaningfulPkg.isNullOrEmpty()
+
+                    // Both orientations are built from the same section composables below
+                    // (PauseStatusLine, GlobalToggleRow, QuickPauseSection, SessionPauseButton,
+                    // PauseCustomDurationSection). Only their arrangement differs, so a control added
+                    // to one orientation cannot go missing from the other.
                     if (isLandscape) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             Text(
                                 "Pause Grayscaler+",
-                                style = MaterialTheme.typography.headlineSmall,
-                                modifier = Modifier.weight(0.9f)
+                                style = MaterialTheme.typography.titleLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
+                            PauseStatusLine(
+                                statusText = statusText,
+                                statusColor = statusColor,
+                                showCancel = showCancel,
+                                onCancel = onCancelPause,
+                                modifier = Modifier.weight(1f)
+                            )
+                            PauseHeaderActions(onOpenApp = onOpenAppClick, onRefresh = onRefreshClick, compact = true)
+                        }
+
+                        HorizontalDivider()
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(IntrinsicSize.Min),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1.25f),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                QuickPauseSection(columns = 5, rowSpacing = 4.dp, onClick = applyPauseOrConfirm)
+                                SessionPauseButton(enabled = sessionEnabled, onClick = applySessionOrConfirm)
+                            }
                             VerticalDivider(
-                                modifier = Modifier.size(width = 1.dp, height = 42.dp),
+                                modifier = Modifier.fillMaxHeight(),
                                 color = MaterialTheme.colorScheme.outlineVariant
                             )
-                            Row(
-                                modifier = Modifier.weight(1.35f),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Row(
-                                    modifier = Modifier.weight(1f),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = statusColor,
-                                        modifier = Modifier.size(8.dp)
-                                    ) {}
-                                    Text(
-                                        statusText,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = statusColor
-                                    )
-                                }
-                                if (isPaused || isSessionActive || isPendingSession) {
-                                    TextButton(
-                                        onClick = {
-                                            dismissAfter {
-                                                cancelPause()
-                                                pauseUntil = 0L
-                                                now = System.currentTimeMillis()
-                                                lastDecision = GrayscaleStateManager.lastDecision
-                                            }
-                                        },
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                                        colors = ButtonDefaults.textButtonColors(
-                                            contentColor = MaterialTheme.colorScheme.tertiary
-                                        )
-                                    ) { Text("Cancel") }
-                                }
-                            }
-                            IconButton(onClick = {
-                                dismissAfter(PauseOverlayExitAction.OpenApp)
-                            }) {
-                                Icon(Icons.Filled.OpenInNew, contentDescription = "Open app")
-                            }
-                            IconButton(onClick = {
-                                grayscalerEnabled = prefs.getBoolean("grayscaler_enabled", true)
-                                pauseUntil = prefs.getLong("pause_until", 0L)
-                                now = System.currentTimeMillis()
-                                lastDecision = GrayscaleStateManager.lastDecision
-                            }) {
-                                Icon(Icons.Filled.Refresh, contentDescription = "Refresh state")
+                                GlobalToggleRow(checked = grayscalerEnabled, onCheckedChange = onToggleGlobal)
+                                PauseCustomDurationSection(
+                                    customValue = customValue,
+                                    onCustomValueChange = { customValue = it },
+                                    unitExpanded = unitExpanded,
+                                    onUnitExpandedChange = { unitExpanded = it },
+                                    selectedUnit = selectedUnit,
+                                    onSelectedUnitChange = { selectedUnit = it },
+                                    onCancel = { dismissAfter() },
+                                    showTopDivider = false,
+                                    showTitle = false,
+                                    landscapeActions = true,
+                                    onApply = onApplyCustom
+                                )
                             }
                         }
                     } else {
@@ -448,172 +495,23 @@ fun PauseOverlayContent(
                                 style = MaterialTheme.typography.headlineSmall,
                                 modifier = Modifier.weight(1f)
                             )
-                            IconButton(onClick = {
-                                dismissAfter(PauseOverlayExitAction.OpenApp)
-                            }) {
-                                Icon(Icons.Filled.OpenInNew, contentDescription = "Open app")
-                            }
-                            IconButton(onClick = {
-                                grayscalerEnabled = prefs.getBoolean("grayscaler_enabled", true)
-                                pauseUntil = prefs.getLong("pause_until", 0L)
-                                now = System.currentTimeMillis()
-                                lastDecision = GrayscaleStateManager.lastDecision
-                            }) {
-                                Icon(Icons.Filled.Refresh, contentDescription = "Refresh state")
-                            }
+                            PauseHeaderActions(onOpenApp = onOpenAppClick, onRefresh = onRefreshClick, compact = false)
                         }
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.weight(1f),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = statusColor,
-                                    modifier = Modifier.size(8.dp)
-                                ) {}
-                                Text(
-                                    statusText,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = statusColor
-                                )
-                            }
-                            if (isPaused || isSessionActive || isPendingSession) {
-                                TextButton(
-                                    onClick = {
-                                        dismissAfter {
-                                            cancelPause()
-                                            pauseUntil = 0L
-                                            now = System.currentTimeMillis()
-                                            lastDecision = GrayscaleStateManager.lastDecision
-                                        }
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                                    colors = ButtonDefaults.textButtonColors(
-                                        contentColor = MaterialTheme.colorScheme.tertiary
-                                    )
-                                ) { Text("Cancel") }
-                            }
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            "Global Toggle",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        PauseStatusLine(
+                            statusText = statusText,
+                            statusColor = statusColor,
+                            showCancel = showCancel,
+                            onCancel = onCancelPause,
+                            modifier = Modifier.fillMaxWidth()
                         )
-                        Switch(
-                            checked = grayscalerEnabled,
-                            onCheckedChange = { enabled ->
-                                GrayscalerToggleCoordinator.setEnabled(context, enabled)
-                                grayscalerEnabled = enabled
-                                lastDecision = GrayscaleStateManager.lastDecision
-                            }
-                        )
-                    }
 
-                    HorizontalDivider()
+                        GlobalToggleRow(checked = grayscalerEnabled, onCheckedChange = onToggleGlobal)
 
-                    val row1 = listOf("5s" to 5L, "15s" to 15L, "30s" to 30L, "1m" to 60L)
-                    val row2 = listOf("2m" to 120L, "5m" to 300L, "10m" to 600L, "15m" to 900L)
-                    val row3 = listOf("30m" to 1800L, "1h" to 3600L)
+                        HorizontalDivider()
 
-                    if (isLandscape) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(IntrinsicSize.Min),
-                            horizontalArrangement = Arrangement.spacedBy(20.dp),
-                            verticalAlignment = Alignment.Top
-                        ) {
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(16.dp)
-                            ) {
-                                Text(
-                                    "Quick pause",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.secondary
-                                )
-                                QuickPauseRow(row1, applyPauseOrConfirm)
-                                QuickPauseRow(row2, applyPauseOrConfirm)
-                                QuickPauseRow(items = row3, onClick = applyPauseOrConfirm, fillEmptySlots = false)
-                                FilledTonalButton(
-                                    onClick = applySessionOrConfirm,
-                                    enabled = !lastMeaningfulPkg.isNullOrEmpty(),
-                                    modifier = Modifier.fillMaxWidth(),
-                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
-                                    colors = ButtonDefaults.filledTonalButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.secondary,
-                                        contentColor = MaterialTheme.colorScheme.onSecondary
-                                    )
-                                ) {
-                                    Text("Current App Session", style = MaterialTheme.typography.labelLarge)
-                                }
-                            }
-                            VerticalDivider(
-                                modifier = Modifier.fillMaxHeight(),
-                                color = MaterialTheme.colorScheme.outlineVariant
-                            )
-                            Column(
-                                modifier = Modifier.weight(0.95f),
-                                verticalArrangement = Arrangement.spacedBy(16.dp)
-                            ) {
-                                PauseCustomDurationSection(
-                                    customValue = customValue,
-                                    onCustomValueChange = { customValue = it },
-                                    unitExpanded = unitExpanded,
-                                    onUnitExpandedChange = { unitExpanded = it },
-                                    selectedUnit = selectedUnit,
-                                    onSelectedUnitChange = { selectedUnit = it },
-                                    onCancel = { dismissAfter() },
-                                    stackFields = true,
-                                    showTopDivider = false,
-                                    landscapeActions = true,
-                                    onApply = {
-                                        val value = customValue.toLongOrNull() ?: return@PauseCustomDurationSection
-                                        val seconds = when (selectedUnit) {
-                                            "Hours" -> value * 3600L
-                                            "Minutes" -> value * 60L
-                                            else -> value
-                                        }
-                                        if (seconds > 0) applyPauseOrConfirm(seconds)
-                                    }
-                                )
-                            }
-                        }
-                    } else {
-                        Text(
-                            "Quick pause",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                        QuickPauseRow(row1, applyPauseOrConfirm)
-                        QuickPauseRow(row2, applyPauseOrConfirm)
-                        QuickPauseRow(items = row3, onClick = applyPauseOrConfirm, fillEmptySlots = false)
-                        FilledTonalButton(
-                            onClick = applySessionOrConfirm,
-                            enabled = !lastMeaningfulPkg.isNullOrEmpty(),
-                            modifier = Modifier.fillMaxWidth(),
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
-                            colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = MaterialTheme.colorScheme.secondary,
-                                contentColor = MaterialTheme.colorScheme.onSecondary
-                            )
-                        ) {
-                            Text("Current App Session", style = MaterialTheme.typography.labelLarge)
-                        }
+                        QuickPauseSection(columns = 4, rowSpacing = 16.dp, onClick = applyPauseOrConfirm)
+                        SessionPauseButton(enabled = sessionEnabled, onClick = applySessionOrConfirm)
                         PauseCustomDurationSection(
                             customValue = customValue,
                             onCustomValueChange = { customValue = it },
@@ -622,15 +520,7 @@ fun PauseOverlayContent(
                             selectedUnit = selectedUnit,
                             onSelectedUnitChange = { selectedUnit = it },
                             onCancel = { dismissAfter() },
-                            onApply = {
-                                val value = customValue.toLongOrNull() ?: return@PauseCustomDurationSection
-                                val seconds = when (selectedUnit) {
-                                    "Hours" -> value * 3600L
-                                    "Minutes" -> value * 60L
-                                    else -> value
-                                }
-                                if (seconds > 0) applyPauseOrConfirm(seconds)
-                            }
+                            onApply = onApplyCustom
                         )
                     }
                 }
@@ -639,11 +529,125 @@ fun PauseOverlayContent(
     }
 }
 
+private val QuickPauseDurations = listOf(
+    "5s" to 5L, "15s" to 15L, "30s" to 30L, "1m" to 60L,
+    "2m" to 120L, "5m" to 300L, "10m" to 600L, "15m" to 900L,
+    "30m" to 1800L, "1h" to 3600L
+)
+
+@Composable
+private fun PauseHeaderActions(onOpenApp: () -> Unit, onRefresh: () -> Unit, compact: Boolean) {
+    val buttonModifier = if (compact) Modifier.size(40.dp) else Modifier
+    IconButton(onClick = onOpenApp, modifier = buttonModifier) {
+        Icon(Icons.Filled.OpenInNew, contentDescription = "Open app")
+    }
+    IconButton(onClick = onRefresh, modifier = buttonModifier) {
+        Icon(Icons.Filled.Refresh, contentDescription = "Refresh state")
+    }
+}
+
+@Composable
+private fun PauseStatusLine(
+    statusText: String,
+    statusColor: Color,
+    showCancel: Boolean,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = statusColor,
+                modifier = Modifier.size(8.dp)
+            ) {}
+            Text(
+                statusText,
+                style = MaterialTheme.typography.labelMedium,
+                color = statusColor,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (showCancel) {
+            TextButton(
+                onClick = onCancel,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.tertiary
+                )
+            ) { Text("Cancel") }
+        }
+    }
+}
+
+@Composable
+private fun GlobalToggleRow(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            "Global Toggle",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+/** "Quick pause" heading plus every quick duration, laid out [columns] buttons per row. */
+@Composable
+internal fun QuickPauseSection(columns: Int, rowSpacing: Dp, onClick: (Long) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(rowSpacing)) {
+        Text(
+            "Quick pause",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.secondary
+        )
+        QuickPauseDurations.chunked(columns).forEach { rowItems ->
+            // A short last row stretches its buttons instead of leaving empty slots.
+            QuickPauseRow(
+                items = rowItems,
+                onClick = onClick,
+                fillEmptySlots = false,
+                columns = columns
+            )
+        }
+    }
+}
+
+@Composable
+internal fun SessionPauseButton(enabled: Boolean, onClick: () -> Unit) {
+    FilledTonalButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+        colors = ButtonDefaults.filledTonalButtonColors(
+            containerColor = MaterialTheme.colorScheme.secondary,
+            contentColor = MaterialTheme.colorScheme.onSecondary
+        )
+    ) {
+        Text("Current App Session", style = MaterialTheme.typography.labelLarge)
+    }
+}
+
 @Composable
 internal fun QuickPauseRow(
     items: List<Pair<String, Long>>,
     onClick: (Long) -> Unit,
-    fillEmptySlots: Boolean = true
+    fillEmptySlots: Boolean = true,
+    columns: Int = 4
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -663,7 +667,7 @@ internal fun QuickPauseRow(
             }
         }
         if (fillEmptySlots) {
-            repeat((4 - items.size).coerceAtLeast(0)) {
+            repeat((columns - items.size).coerceAtLeast(0)) {
                 Spacer(modifier = Modifier.weight(1f))
             }
         }
@@ -682,6 +686,7 @@ internal fun PauseCustomDurationSection(
     onCancel: () -> Unit,
     stackFields: Boolean = false,
     showTopDivider: Boolean = true,
+    showTitle: Boolean = true,
     landscapeActions: Boolean = false,
     onApply: () -> Unit
 ) {
@@ -689,11 +694,13 @@ internal fun PauseCustomDurationSection(
         HorizontalDivider()
     }
 
-    Text(
-        "Custom duration",
-        style = MaterialTheme.typography.titleMedium,
-        color = MaterialTheme.colorScheme.secondary
-    )
+    if (showTitle) {
+        Text(
+            "Custom duration",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.secondary
+        )
+    }
 
     if (stackFields) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -94,6 +94,10 @@ class MainService : AccessibilityService() {
     // strands the screen in color while the master switch still reads "on".
     private var suppressedBySystemUi = false
 
+    // One pending re-check for a window event the stale-window guard dropped. If the dropped
+    // package really is in front a moment later, it is evaluated then; otherwise nothing happens.
+    private var staleRecheckRunnable: Runnable? = null
+
     // Package name of the browser currently in foreground, null if not a browser
     private var currentBrowserPkg: String? = null
     private var lastUrlCheckTime = 0L
@@ -118,6 +122,8 @@ class MainService : AccessibilityService() {
     // filter (skip rescans triggered by the user's own typing while labels are already up) and by
     // the heartbeat (kick a rescan if we somehow have no labels while in a healthy WhatsApp state).
     private var whatsAppOverlayHasLabels = false
+    private var whatsAppHeartbeatTick = 0
+    private var lastWhatsAppHealMs = 0L
     private val whatsAppHeartbeatRunnable = Runnable { runWhatsAppHeartbeat() }
 
     private val browserPackages: Set<String> by lazy {
@@ -139,12 +145,13 @@ class MainService : AccessibilityService() {
                     exitWhatsAppActiveState()
                     GrayscaleStateManager.applySystemEventMode(
                         context,
-                        prefs.getString("lockscreen_mode", "ignore") ?: "ignore"
+                        prefs.getString("lockscreen_mode", "ignore") ?: "ignore",
+                        "screen_off"
                     )
                 }
                 Intent.ACTION_USER_PRESENT -> {
                     clearExperimentalNotificationShade("user_present")
-                    GrayscaleStateManager.invalidate(context)
+                    GrayscaleStateManager.invalidate(context, "user_present")
                 }
             }
         }
@@ -177,8 +184,16 @@ class MainService : AccessibilityService() {
                         val startMs = prefs.getLong(ScheduleReceiver.PREF_SESSION_PAUSE_START_MS, 0L)
                         countdownOverlay?.showSession(startMs)
                     }
-                    "timed" -> countdownOverlay?.hide()
-                    "pending_session" -> countdownOverlay?.hide()
+                    // Leaving "session" by any route (pause end, a new timed pause, the global
+                    // toggle) must drop the grace timer, or it later ends an unrelated pause.
+                    "timed" -> {
+                        graceHandler.removeCallbacks(graceRunnable)
+                        countdownOverlay?.hide()
+                    }
+                    "pending_session" -> {
+                        graceHandler.removeCallbacks(graceRunnable)
+                        countdownOverlay?.hide()
+                    }
                 }
                 reevaluateWhatsAppActiveState()
             }
@@ -227,12 +242,42 @@ class MainService : AccessibilityService() {
         // Re-assert grayscale on (re)connect. After a reboot, the service being toggled in
         // Accessibility settings, or an OS-initiated restart, the system Secure value may no longer
         // match the master switch and nothing else re-applies it until the next window event.
+        instance = this
         GrayscaleLog.log(this, "serviceConnected", "reconciling grayscale state")
-        GrayscaleStateManager.invalidate(this)
+        GrayscaleStateManager.invalidate(this, "service_connected")
+    }
+
+    /**
+     * Drops every piece of in-memory tracking state so the next event starts clean. Called by
+     * [GrayscalerToggleCoordinator] as part of the global on/off reset. Pref listeners cannot do
+     * this job: they only fire when a value actually changes.
+     */
+    fun resetTransientState() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            graceHandler.post { resetTransientState() }
+            return
+        }
+        graceHandler.removeCallbacks(graceRunnable)
+        cancelStaleRecheck()
+        suppressedBySystemUi = false
+        experimentalNotificationShadeActive = false
+        experimentalNotificationShadeLastConfirmAt = 0L
+        currentBrowserPkg = null
+        lastUrlCheckTime = 0L
+        whatsAppEmptyRetryCount = 0
+        lastWhatsAppHealMs = 0L
+        val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+        val paused = prefs.getLong("pause_until", 0L) > System.currentTimeMillis() ||
+            prefs.getString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed") == "session"
+        if (!paused) countdownOverlay?.hide()
+        reevaluateWhatsAppActiveState()
+        GrayscaleLog.log(this, "reset", "transient service state cleared")
     }
 
     override fun onDestroy() {
+        if (instance === this) instance = null
         graceHandler.removeCallbacks(graceRunnable)
+        cancelStaleRecheck()
         whatsAppScanHandler.removeCallbacks(whatsAppScanRunnable)
         whatsAppScanHandler.removeCallbacks(whatsAppRetryRunnable)
         whatsAppScanHandler.removeCallbacks(whatsAppHeartbeatRunnable)
@@ -256,7 +301,10 @@ class MainService : AccessibilityService() {
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
-        )
+        ).apply {
+            // The popup pads itself for the keyboard; resize (not pan) avoids shifting it twice.
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        }
         overlayParams = params
         val lifecycleOwner = OverlayLifecycleOwner().also {
             it.start()
@@ -324,12 +372,16 @@ class MainService : AccessibilityService() {
         // settings, lockscreen) is on top of WhatsApp — and bring it back the moment the
         // obstruction clears. Runs on every event so we catch TYPE_WINDOWS_CHANGED that fires
         // when the shade is dragged down (which would otherwise fall through).
-        checkWhatsAppObscuredTransition()
+        // Both per-event checks below need the active window's package. Resolve it at most once per
+        // event, and only if one of them will actually use it.
+        val activeRootPkg: String? =
+            if (isWhatsAppForegrounded || suppressedBySystemUi) activeRootPackage() else null
+        checkWhatsAppObscuredTransition(activeRootPkg)
 
         // Restore grayscale once a SystemUI surface that disabled it is dismissed. Runs on every
         // event (including TYPE_WINDOWS_CHANGED, which fires on shade/power-menu dismiss when no
         // fresh TYPE_WINDOW_STATE_CHANGED does). Cheap: bails immediately unless we're suppressed.
-        maybeRecoverFromSystemUiSuppression()
+        maybeRecoverFromSystemUiSuppression(activeRootPkg)
 
         // Inline reply typing detection — fires when an EditText inside a notification gets focus
         if (event?.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED) {
@@ -340,7 +392,8 @@ class MainService : AccessibilityService() {
             val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
             GrayscaleStateManager.applySystemEventMode(
                 this,
-                prefs.getString("inline_reply_mode", "ignore") ?: "ignore"
+                prefs.getString("inline_reply_mode", "ignore") ?: "ignore",
+                "inline_reply"
             )
             return
         }
@@ -429,43 +482,47 @@ class MainService : AccessibilityService() {
             POWER_MENU_KEYWORDS.any { className.contains(it, ignoreCase = true) }
         when {
             isRecents -> {
-                exitWhatsAppActiveState()
+                enterSystemUiSurface()
                 GrayscaleStateManager.applySystemEventMode(
                     this,
-                    prefs.getString("app_switcher_mode", "ignore") ?: "ignore"
+                    prefs.getString("app_switcher_mode", "ignore") ?: "ignore",
+                    "recents"
                 )
                 markSuppressedBySystemUi("recents", className)
                 return
             }
             isNotifShade -> {
-                exitWhatsAppActiveState()
+                enterSystemUiSurface()
                 GrayscaleStateManager.applySystemEventMode(
                     this,
-                    prefs.getString("notification_center_mode", "ignore") ?: "ignore"
+                    prefs.getString("notification_center_mode", "ignore") ?: "ignore",
+                    "shade"
                 )
                 markSuppressedBySystemUi("shade", className)
                 return
             }
             isLockscreen -> {
-                exitWhatsAppActiveState()
+                enterSystemUiSurface()
                 GrayscaleStateManager.applySystemEventMode(
                     this,
-                    prefs.getString("lockscreen_mode", "ignore") ?: "ignore"
+                    prefs.getString("lockscreen_mode", "ignore") ?: "ignore",
+                    "lockscreen"
                 )
                 markSuppressedBySystemUi("lockscreen", className)
                 return
             }
             isPowerMenu -> {
-                exitWhatsAppActiveState()
+                enterSystemUiSurface()
                 GrayscaleStateManager.applySystemEventMode(
                     this,
-                    prefs.getString("power_menu_mode", "disable") ?: "disable"
+                    prefs.getString("power_menu_mode", "disable") ?: "disable",
+                    "power_menu"
                 )
                 markSuppressedBySystemUi("power_menu", className)
                 return
             }
             pkg == "com.android.systemui" -> {
-                exitWhatsAppActiveState()
+                enterSystemUiSurface()
                 return
             }
         }
@@ -473,22 +530,50 @@ class MainService : AccessibilityService() {
         // 3. Discard stale events from windows being detached — only trust this event if
         //    rootInActiveWindow confirms the same package is actually in the foreground.
         //    Null rootInActiveWindow means we can't confirm either way, so we let it through.
-        //    WhatsApp exception (Unit 2A): re-entry from app-switcher / another app emits a clean
-        //    TYPE_WINDOW_STATE_CHANGED for WhatsApp while rootInActiveWindow briefly still points
-        //    at recents — discarding it here strands isWhatsAppForegrounded at false and produces
-        //    the "no chips on re-entry until I app-switch again" bug. updateWhatsAppActiveState
-        //    re-validates pkg before activating, so trusting this event is safe.
-        val root = rootInActiveWindow
-        val rootPkg = root?.packageName?.toString()
-        root?.recycle()
-        if (rootPkg != null && rootPkg != pkg && pkg != WHATSAPP_PKG) return
+        //    A dropped event is not forgotten: on re-entry from the app switcher the root briefly
+        //    still points at recents, and for that package this is the only event we will get. So
+        //    look again shortly and evaluate it then if it really is in front. This replaces the
+        //    old "always trust WhatsApp" bypass, which evaluated (and remembered) WhatsApp even
+        //    while another app was on screen, and it heals dropped events for every other app too.
+        val rootPkg = activeRootPkg ?: activeRootPackage()
+        if (rootPkg != null && rootPkg != pkg) {
+            scheduleStaleRecheck(pkg, className)
+            return
+        }
 
         // 4. Apply per-app logic. GrayscaleStateManager is responsible for deciding whether this
         //    foreground is meaningful enough to become the restore/invalidation context.
+        cancelStaleRecheck()
         handleForegroundApp(pkg, className)
     }
 
+    private fun enterSystemUiSurface() {
+        cancelStaleRecheck()
+        exitWhatsAppActiveState()
+    }
+
+    private fun scheduleStaleRecheck(pkg: String, className: String) {
+        cancelStaleRecheck()
+        val runnable = Runnable {
+            staleRecheckRunnable = null
+            if (activeRootPackage() == pkg) {
+                GrayscaleLog.log(this, "stale_recheck", "accepted late pkg=$pkg")
+                handleForegroundApp(pkg, className)
+            }
+        }
+        staleRecheckRunnable = runnable
+        graceHandler.postDelayed(runnable, STALE_RECHECK_DELAY_MS)
+    }
+
+    private fun cancelStaleRecheck() {
+        staleRecheckRunnable?.let { graceHandler.removeCallbacks(it) }
+        staleRecheckRunnable = null
+    }
+
     private fun checkSessionPauseState(pkg: String) {
+        // Our own windows (the pause popup, the app itself) are not "leaving the session app".
+        // Without this, opening the popup inside the session app armed the grace timer.
+        if (pkg == packageName) return
         val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
         when (prefs.getString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed") ?: "timed") {
             "pending_session" -> {
@@ -521,7 +606,7 @@ class MainService : AccessibilityService() {
     private fun handleForegroundApp(pkg: String, className: String) {
         checkSessionPauseState(pkg)
         val decision = GrayscaleStateManager.evaluate(pkg, className, this)
-        GrayscaleStateManager.applyToSystem(this, decision)
+        GrayscaleStateManager.applyToSystem(this, decision, "foreground:$pkg")
         if (decision == GrayscaleStateManager.Decision.SKIP) return
         // A real foreground app just re-applied grayscale state, so any pending SystemUI-dismissal
         // recovery is satisfied — drop the flag so it can never linger across unrelated events.
@@ -639,12 +724,35 @@ class MainService : AccessibilityService() {
             updateWhatsAppActiveState(WHATSAPP_PKG)
             return
         }
-        if (isWhatsAppForegrounded && !isWhatsAppObscuredBySystemUi && !whatsAppOverlayHasLabels) {
+        whatsAppHeartbeatTick++
+        // Every scan costs a screenshot. Content changes and scrolls already schedule their own
+        // scans, so an idle screen with nothing to label (e.g. a chat list with no outgoing
+        // messages) is only re-probed every few ticks instead of once a second, forever.
+        if (isWhatsAppForegrounded && !isWhatsAppObscuredBySystemUi && !whatsAppOverlayHasLabels &&
+            whatsAppHeartbeatTick % WHATSAPP_HEARTBEAT_IDLE_SCAN_EVERY == 0
+        ) {
             scheduleWhatsAppScan()
         }
+        healGrayscaleIfDrifted()
         if (isWhatsAppForegrounded || rootPkg == WHATSAPP_PKG) {
             whatsAppScanHandler.postDelayed(whatsAppHeartbeatRunnable, WHATSAPP_HEARTBEAT_INTERVAL_MS)
         }
+    }
+
+    /**
+     * Logic-level self heal while WhatsApp is on screen: if the system Secure value no longer
+     * matches what we last decided, re-derive and re-apply. This cannot see the case where the
+     * value still reads "on" but the panel shows colour (screenshots are taken before the colour
+     * transform) — the global toggle's forced OFF -> ON covers that one.
+     */
+    private fun healGrayscaleIfDrifted() {
+        if (!isWhatsAppForegrounded || isWhatsAppObscuredBySystemUi || suppressedBySystemUi) return
+        if (GrayscaleStateManager.systemMatchesBelief(this)) return
+        val now = System.currentTimeMillis()
+        if (now - lastWhatsAppHealMs < WHATSAPP_HEAL_MIN_INTERVAL_MS) return
+        lastWhatsAppHealMs = now
+        GrayscaleLog.log(this, "wa_heal", "system value drifted from belief -> invalidate")
+        GrayscaleStateManager.invalidate(this, "wa_heal")
     }
 
     /**
@@ -677,20 +785,20 @@ class MainService : AccessibilityService() {
      * re-enable while the switcher / power menu / shade is still on top (which would defeat the
      * user's app_switcher_mode / power_menu_mode = "disable" choice).
      */
-    private fun maybeRecoverFromSystemUiSuppression() {
+    private fun maybeRecoverFromSystemUiSuppression(activeRootPkg: String?) {
         if (!suppressedBySystemUi) return
-        val active = activeRootPackage() ?: return
+        val active = activeRootPkg ?: return
         if (active == "com.android.systemui" || active == packageName) return
         val target = GrayscaleStateManager.lastMeaningfulForegroundPkg(this) ?: return
         if (active != target) return
         suppressedBySystemUi = false
         GrayscaleLog.log(this, "recover", "systemui dismissed active=$active -> invalidate")
-        GrayscaleStateManager.invalidate(this)
+        GrayscaleStateManager.invalidate(this, "systemui_recover")
     }
 
-    private fun checkWhatsAppObscuredTransition() {
+    private fun checkWhatsAppObscuredTransition(activeRootPkg: String?) {
         if (!isWhatsAppForegrounded) return
-        val activePkg = activeRootPackage() ?: return  // null = transition in progress, ignore
+        val activePkg = activeRootPkg ?: return  // null = transition in progress, ignore
         // Treat anything not WhatsApp (and not our own overlay surface) as obscuring.
         val obscured = activePkg != WHATSAPP_PKG && activePkg != packageName
         if (obscured == isWhatsAppObscuredBySystemUi) return
@@ -729,8 +837,13 @@ class MainService : AccessibilityService() {
             whatsAppEmptyRetryCount = 0
             whatsAppScanHandler.removeCallbacks(whatsAppRetryRunnable)
         }
+        // Trailing throttle: never start a scan (= a screenshot) sooner than
+        // WHATSAPP_MIN_CAPTURE_INTERVAL_MS after the previous capture. Repeated captures are the
+        // chip feature's only system-level side effect, so they are kept to what is needed.
+        val sinceCapture = System.currentTimeMillis() - whatsAppScanner.lastCaptureAtMs
+        val throttle = (WHATSAPP_MIN_CAPTURE_INTERVAL_MS - sinceCapture).coerceAtLeast(0L)
         whatsAppScanHandler.removeCallbacks(whatsAppScanRunnable)
-        whatsAppScanHandler.postDelayed(whatsAppScanRunnable, debounce.toLong())
+        whatsAppScanHandler.postDelayed(whatsAppScanRunnable, maxOf(debounce.toLong(), throttle))
     }
 
     private fun performWhatsAppScan() {
@@ -837,17 +950,17 @@ class MainService : AccessibilityService() {
     private fun applyWebShortcutRule(browserPkg: String) {
         val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
         if (prefs.getLong("pause_until", 0L) > System.currentTimeMillis()) {
-            GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
+            GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE, "web_shortcut:paused")
             return
         }
         if (!prefs.getBoolean("grayscaler_enabled", true)) {
-            GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
+            GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE, "web_shortcut:disabled")
             return
         }
         val bedtimeStore = BedtimeStore(this)
         bedtimeStore.syncRuntimeState()
         if (bedtimeStore.bedtimeOverrideActive) {
-            GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE)
+            GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE, "web_shortcut:bedtime")
             return
         }
 
@@ -863,14 +976,23 @@ class MainService : AccessibilityService() {
             webStore.shouldGrayScale(url)
         }
         when (decision) {
-            true -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE)
-            false -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE)
+            true -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE, "web_shortcut:rule_enable")
+            false -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.DISABLE, "web_shortcut:rule_disable")
             null -> { /* no matching rule — leave current state */ }
         }
     }
 
-    private fun findUrlInNodeTree(node: AccessibilityNodeInfo, depth: Int = 0): String? {
-        if (depth > 8) return null
+    /**
+     * Depth-first search for the browser's URL text. Bounded by depth and by a total node budget:
+     * with flagIncludeNotImportantViews the tree is deeper (the old cap of 8 could stop short of
+     * the URL bar), and the budget keeps a huge page from turning this into a long walk.
+     */
+    private fun findUrlInNodeTree(root: AccessibilityNodeInfo): String? =
+        findUrlInNodeTree(root, 0, intArrayOf(URL_WALK_NODE_BUDGET))
+
+    private fun findUrlInNodeTree(node: AccessibilityNodeInfo, depth: Int, budget: IntArray): String? {
+        if (depth > URL_WALK_MAX_DEPTH || budget[0] <= 0) return null
+        budget[0]--
         val text = node.text?.toString()?.trim() ?: ""
         val url = when {
             text.startsWith("http://") || text.startsWith("https://") -> text
@@ -882,8 +1004,11 @@ class MainService : AccessibilityService() {
         if (url != null) return url
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val result = findUrlInNodeTree(child, depth + 1)
-            child.recycle()
+            val result = try {
+                findUrlInNodeTree(child, depth + 1, budget)
+            } finally {
+                child.recycle()
+            }
             if (result != null) return result
         }
         return null
@@ -899,7 +1024,7 @@ class MainService : AccessibilityService() {
         // Previously forced grayscale OFF here with no path to re-enable, which stranded the screen
         // in color while the master switch still read "on". Re-derive the correct state instead.
         GrayscaleLog.log(this, "onInterrupt", "reconciling grayscale state")
-        GrayscaleStateManager.invalidate(this)
+        GrayscaleStateManager.invalidate(this, "interrupt")
     }
 
     private fun handleExperimentalNotificationShadeEvent(
@@ -964,7 +1089,8 @@ class MainService : AccessibilityService() {
 
         GrayscaleStateManager.applySystemEventMode(
             this,
-            prefs.getString(PREF_EXPERIMENTAL_NOTIFICATION_SHADE_MODE, "ignore") ?: "ignore"
+            prefs.getString(PREF_EXPERIMENTAL_NOTIFICATION_SHADE_MODE, "ignore") ?: "ignore",
+            "experimental_shade"
         )
         return true
     }
@@ -1015,6 +1141,11 @@ class MainService : AccessibilityService() {
     private enum class ShadeSignal { SHADE, EXCLUDED, UNKNOWN }
 
     companion object {
+        /** The connected service, or null. Lets the global toggle clear in-memory tracking state. */
+        @Volatile
+        var instance: MainService? = null
+            private set
+
         const val ACTION_SHOW_PAUSE_OVERLAY = "io.github.cloudburst.grayscaler.ACTION_SHOW_PAUSE_OVERLAY"
 
         const val PREF_EXPERIMENTAL_NOTIFICATION_SHADE_ENABLED = "experimental_notification_shade_enabled"
@@ -1048,6 +1179,12 @@ class MainService : AccessibilityService() {
         // Heartbeat tick — recovers state for events the accessibility stream silently drops.
         // See [runWhatsAppHeartbeat] for the two failure modes this catches.
         private const val WHATSAPP_HEARTBEAT_INTERVAL_MS = 1000L
+        private const val WHATSAPP_HEARTBEAT_IDLE_SCAN_EVERY = 5
+        private const val WHATSAPP_MIN_CAPTURE_INTERVAL_MS = 1000L
+        private const val WHATSAPP_HEAL_MIN_INTERVAL_MS = 3000L
+        private const val STALE_RECHECK_DELAY_MS = 300L
+        private const val URL_WALK_MAX_DEPTH = 20
+        private const val URL_WALK_NODE_BUDGET = 500
         private const val WHATSAPP_PKG = "com.whatsapp"
         private const val WHATSAPP_PROBE_INTERVAL_MS = 2000L
 
@@ -1057,7 +1194,7 @@ class MainService : AccessibilityService() {
         const val OFF = 0
         const val ON = 1
 
-        private const val TAG = "Grayscaler"
+        private const val TAG = GrayscaleStateManager.LOG_TAG
         private const val URL_CHECK_DEBOUNCE_MS = 500L
         private const val EXPERIMENTAL_NOTIFICATION_SHADE_TIMEOUT_MS = 1200L
 

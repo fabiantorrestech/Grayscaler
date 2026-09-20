@@ -49,6 +49,7 @@ class WhatsAppReadIndicatorOverlayManager(
         } catch (_: IllegalArgumentException) {
         }
         hostView = null
+        GrayscaleLog.log(context, "wa_overlay", "detached")
         layoutParams = null
     }
 
@@ -69,6 +70,7 @@ class WhatsAppReadIndicatorOverlayManager(
         }
         val view = LabelsCanvasView(context)
         windowManager.addView(view, params)
+        GrayscaleLog.log(context, "wa_overlay", "attached")
         hostView = view
         layoutParams = params
     }

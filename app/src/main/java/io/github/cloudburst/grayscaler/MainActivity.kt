@@ -192,13 +192,13 @@ class MainActivity : ComponentActivity() {
         super.onPause()
         store.save()
         webShortcutStore.save()
-        GrayscaleStateManager.invalidate(this)
+        GrayscaleStateManager.invalidate(this, "activity_pause")
     }
 
     override fun onResume() {
         super.onResume()
         val decision = GrayscaleStateManager.evaluateCurrentApp(this, javaClass.name)
-        GrayscaleStateManager.applyToSystem(this, decision)
+        GrayscaleStateManager.applyToSystem(this, decision, "activity_resume")
     }
 
     private fun hasAllPermissions(): Boolean {
@@ -478,7 +478,7 @@ private fun MainScreen(
                         Switch(
                             checked = grayscalerEnabled,
                             onCheckedChange = { enabled ->
-                                GrayscalerToggleCoordinator.setEnabled(context, enabled)
+                                GrayscalerToggleCoordinator.setEnabled(context, enabled, "main_switch")
                             }
                         )
                     }

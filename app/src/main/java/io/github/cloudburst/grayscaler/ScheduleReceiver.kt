@@ -56,7 +56,7 @@ class ScheduleReceiver : BroadcastReceiver() {
             registerAll()
             resync()
         }
-        GrayscaleStateManager.invalidate(context)
+        GrayscaleStateManager.invalidate(context, "boot")
     }
 
     private fun onPowerChanged(context: Context) {
@@ -72,7 +72,7 @@ class ScheduleReceiver : BroadcastReceiver() {
 
         store.syncRuntimeStateNow(scheduleId)
         BedtimeManager(context).resync()
-        GrayscaleStateManager.invalidate(context)
+        GrayscaleStateManager.invalidate(context, "schedule_start")
 
         // Re-register next week's alarm for this day
         ScheduleManager(context).register(schedule)
@@ -86,7 +86,7 @@ class ScheduleReceiver : BroadcastReceiver() {
 
         store.syncRuntimeStateNow()
         BedtimeManager(context).resync()
-        GrayscaleStateManager.invalidate(context)
+        GrayscaleStateManager.invalidate(context, "schedule_end")
 
         ScheduleManager(context).register(schedule)
     }
@@ -100,20 +100,11 @@ class ScheduleReceiver : BroadcastReceiver() {
 
     private fun onSetEnabled(context: Context, intent: Intent) {
         val enabled = intent.getBooleanExtra(EXTRA_ENABLED, true)
-        val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
-        prefs.edit().putBoolean("grayscaler_enabled", enabled).commit()
-        GrayscaleStateManager.invalidate(context)
-        GrayscalerToggleCoordinator.requestTileSync(context)
-        GrayscalerWidgetReceiver.triggerUpdate(context)
+        GrayscalerToggleCoordinator.setEnabled(context, enabled, "broadcast_set_enabled")
     }
 
     private fun onToggleEnabled(context: Context) {
-        val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
-        val current = prefs.getBoolean("grayscaler_enabled", true)
-        prefs.edit().putBoolean("grayscaler_enabled", !current).commit()
-        GrayscaleStateManager.invalidate(context)
-        GrayscalerToggleCoordinator.requestTileSync(context)
-        GrayscalerWidgetReceiver.triggerUpdate(context)
+        GrayscalerToggleCoordinator.toggle(context, "widget_toggle")
     }
 
     private fun onPauseGrayscaler(context: Context) {
@@ -141,8 +132,15 @@ class ScheduleReceiver : BroadcastReceiver() {
         cancelPauseNotifyAlarm(context)
         cancelNotifications(context)
 
-        prefs.edit().putLong("pause_until", pauseUntil).commit()
-        GrayscaleStateManager.invalidate(context)
+        // A timed pause replaces any session pause. Leaving pause_type at "session" kept the
+        // session rules (and its grace timer) alive underneath the new timed pause.
+        prefs.edit()
+            .putLong("pause_until", pauseUntil)
+            .putString(PREF_PAUSE_TYPE, "timed")
+            .putString(PREF_SESSION_PAUSE_PKG, "")
+            .putLong(PREF_SESSION_PAUSE_START_MS, 0L)
+            .commit()
+        GrayscaleStateManager.invalidate(context, "apply_pause")
 
         // Schedule alarm to end the pause
         val endIntent = Intent(context, ScheduleReceiver::class.java).apply {
@@ -179,7 +177,7 @@ class ScheduleReceiver : BroadcastReceiver() {
                 .putString(PREF_SESSION_PAUSE_PKG, pkg)
                 .putLong(PREF_SESSION_PAUSE_START_MS, startMs)
                 .commit()
-            GrayscaleStateManager.invalidate(context)
+            GrayscaleStateManager.invalidate(context, "session_pause")
             postSessionActiveNotification(context, pkg, startMs)
         } else {
             prefs.edit()
@@ -187,7 +185,7 @@ class ScheduleReceiver : BroadcastReceiver() {
                 .putString(PREF_SESSION_PAUSE_PKG, "")
                 .putLong(PREF_SESSION_PAUSE_START_MS, 0L)
                 .commit()
-            GrayscaleStateManager.invalidate(context)
+            GrayscaleStateManager.invalidate(context, "pending_session")
             postSessionPendingNotification(context)
         }
 
@@ -196,20 +194,8 @@ class ScheduleReceiver : BroadcastReceiver() {
     }
 
     private fun onPauseEnd(context: Context) {
-        val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
-        prefs.edit()
-            .putLong("pause_until", 0L)
-            .putString(PREF_PAUSE_TYPE, "timed")
-            .putString(PREF_SESSION_PAUSE_PKG, "")
-            .putLong(PREF_SESSION_PAUSE_START_MS, 0L)
-            .commit()
-
-        cancelPauseEndAlarm(context)
-        cancelPauseNotifyAlarm(context)
-        cancelNotifications(context)
-
-        GrayscaleStateManager.invalidate(context)
-        GrayscalerWidgetReceiver.cancelTickAlarm(context)
+        clearAllPauseState(context)
+        GrayscaleStateManager.invalidate(context, "pause_end")
         GrayscalerWidgetReceiver.triggerUpdate(context)
     }
 
@@ -350,32 +336,6 @@ class ScheduleReceiver : BroadcastReceiver() {
         )
     }
 
-    private fun cancelPauseEndAlarm(context: Context) {
-        val pi = PendingIntent.getBroadcast(
-            context, PAUSE_END_REQUEST_CODE,
-            Intent(context, ScheduleReceiver::class.java).apply { action = ACTION_PAUSE_END },
-            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
-        ) ?: return
-        (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(pi)
-        pi.cancel()
-    }
-
-    private fun cancelPauseNotifyAlarm(context: Context) {
-        val pi = PendingIntent.getBroadcast(
-            context, PAUSE_NOTIFY_TRANSITION_REQUEST_CODE,
-            Intent(context, ScheduleReceiver::class.java).apply { action = ACTION_PAUSE_NOTIFY_COUNTDOWN },
-            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
-        ) ?: return
-        (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(pi)
-        pi.cancel()
-    }
-
-    private fun cancelNotifications(context: Context) {
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.cancel(NOTIF_ID_STATIC)
-        nm.cancel(NOTIF_ID_COUNTDOWN)
-    }
-
     private fun hasNotificationPermission(context: Context): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ContextCompat.checkSelfPermission(
@@ -420,5 +380,51 @@ class ScheduleReceiver : BroadcastReceiver() {
 
         const val NOTIF_ID_STATIC = 1001
         const val NOTIF_ID_COUNTDOWN = 1002
+
+        /**
+         * Cancels every kind of pause (timed, session, pending session) and everything attached to
+         * it: end/notify alarms, notifications, widget tick alarm. Does NOT re-apply to the OS or
+         * refresh widgets; callers decide how to follow up.
+         */
+        internal fun clearAllPauseState(context: Context) {
+            context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+                .edit()
+                .putLong("pause_until", 0L)
+                .putString(PREF_PAUSE_TYPE, "timed")
+                .putString(PREF_SESSION_PAUSE_PKG, "")
+                .putLong(PREF_SESSION_PAUSE_START_MS, 0L)
+                .commit()
+
+            cancelPauseEndAlarm(context)
+            cancelPauseNotifyAlarm(context)
+            cancelNotifications(context)
+            GrayscalerWidgetReceiver.cancelTickAlarm(context)
+        }
+
+        internal fun cancelPauseEndAlarm(context: Context) {
+            val pi = PendingIntent.getBroadcast(
+                context, PAUSE_END_REQUEST_CODE,
+                Intent(context, ScheduleReceiver::class.java).apply { action = ACTION_PAUSE_END },
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            ) ?: return
+            (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(pi)
+            pi.cancel()
+        }
+
+        internal fun cancelPauseNotifyAlarm(context: Context) {
+            val pi = PendingIntent.getBroadcast(
+                context, PAUSE_NOTIFY_TRANSITION_REQUEST_CODE,
+                Intent(context, ScheduleReceiver::class.java).apply { action = ACTION_PAUSE_NOTIFY_COUNTDOWN },
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            ) ?: return
+            (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(pi)
+            pi.cancel()
+        }
+
+        internal fun cancelNotifications(context: Context) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancel(NOTIF_ID_STATIC)
+            nm.cancel(NOTIF_ID_COUNTDOWN)
+        }
     }
 }

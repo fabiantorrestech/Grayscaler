@@ -35,7 +35,7 @@ class GrayscalerTileService : TileService() {
 
     override fun onClick() {
         super.onClick()
-        GrayscalerToggleCoordinator.toggle(this)
+        GrayscalerToggleCoordinator.toggle(this, "qs_tile")
         syncTile()
     }
 

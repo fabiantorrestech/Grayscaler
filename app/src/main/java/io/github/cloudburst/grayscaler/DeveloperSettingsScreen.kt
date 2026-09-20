@@ -49,15 +49,8 @@ fun DeveloperSettingsScreen(onBack: () -> Unit) {
     }
     var diagRefreshTick by remember { mutableStateOf(0) }
     val grayscaleStateSnapshot = remember(diagRefreshTick) {
-        val master = prefs.getBoolean("grayscaler_enabled", true)
-        val actualEnabled = android.provider.Settings.Secure.getInt(
-            context.contentResolver, MainService.DISPLAY_DALTONIZER_ENABLED, -1
-        )
-        val actualMode = android.provider.Settings.Secure.getInt(
-            context.contentResolver, MainService.DISPLAY_DALTONIZER, -1
-        )
-        "master=$master · lastDecision=${GrayscaleStateManager.lastDecision} · " +
-            "system enabled=$actualEnabled mode=$actualMode"
+        // Same snapshot the global toggle logs before and after a reset, one field per line.
+        GrayscaleStateManager.stateSnapshot(context).replace(' ', '\n')
     }
 
     var experimentalShadeEnabled by remember {
