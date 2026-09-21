@@ -25,6 +25,7 @@ class OverlayIgnoreStore(private val context: Context) {
             writer.write("gemini_ignored:$geminiIgnored\n")
             userPackages.forEach { writer.write("$it\n") }
         }
+        AutoBackup.requestBackup(context)
     }
 
     fun addPackage(pkg: String) {

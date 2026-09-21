@@ -49,6 +49,7 @@ class ScheduleStore(private val context: Context) {
         val array = JSONArray()
         schedules.forEach { array.put(encodeSchedule(it)) }
         path.writeText(array.toString())
+        AutoBackup.requestBackup(context)
     }
 
     fun add(schedule: Schedule) {

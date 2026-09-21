@@ -51,6 +51,7 @@ class WebShortcutStore(val context: Context) {
             writer.write("rule\t$id\t$mode\n")
         }
         writer.close()
+        AutoBackup.requestBackup(context)
     }
 
     // Called after launcher shortcuts are fetched — merges by origin so duplicates don't appear

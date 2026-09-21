@@ -31,6 +31,7 @@ class AppListStore(
         prefs.edit().putBoolean("app_list_whitelist_mode", whitelist).apply()
         writeApps(whitelistPath, whitelistedApps)
         writeApps(blacklistPath, blacklistedApps)
+        AutoBackup.requestBackup(context)
     }
 
     private fun writeApps(path: java.io.File, apps: Set<String>) {

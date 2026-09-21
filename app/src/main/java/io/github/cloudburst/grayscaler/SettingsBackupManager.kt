@@ -15,7 +15,8 @@ object SettingsBackupManager {
     private const val PAUSE_END_REQUEST_CODE = 9999
     private const val PAUSE_NOTIFY_TRANSITION_REQUEST_CODE = 9998
 
-    private val transientPrefKeys = setOf(
+    // Runtime and diagnostic values: never exported, and changing them never triggers an auto-backup.
+    internal val transientPrefKeys = setOf(
         "active_schedule_id",
         "last_window_class",
         "last_meaningful_foreground_class",
@@ -24,8 +25,15 @@ object SettingsBackupManager {
         BedtimeStore.KEY_BEDTIME_OVERRIDE_ACTIVE,
         "notif_permission_prompted",
         "pause_until",
+        ScheduleReceiver.PREF_PAUSE_TYPE,
+        ScheduleReceiver.PREF_SESSION_PAUSE_PKG,
+        ScheduleReceiver.PREF_SESSION_PAUSE_START_MS,
         "schedule_override_active",
-        MainService.PREF_EXPERIMENTAL_NOTIFICATION_SHADE_DEBUG
+        MainService.PREF_EXPERIMENTAL_NOTIFICATION_SHADE_DEBUG,
+        MainService.PREF_WHATSAPP_SHADE_DEBUG,
+        MainService.PREF_WHATSAPP_COLOR_PROBE_RESULT,
+        WhatsAppReadIndicatorScanner.PREF_WHATSAPP_CHATLIST_DEBUG,
+        WhatsAppReadIndicatorScanner.PREF_WHATSAPP_CONVO_DEBUG
     )
 
     private val fontSlots = listOf(
@@ -92,7 +100,7 @@ object SettingsBackupManager {
         GrayscaleStateManager.invalidate(context)
     }
 
-    private fun buildBackupJson(context: Context): JSONObject {
+    internal fun buildBackupJson(context: Context): JSONObject {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         return JSONObject().apply {
             put("version", BACKUP_VERSION)
@@ -204,9 +212,13 @@ object SettingsBackupManager {
     }
 
     private fun clearRuntimePause(context: Context) {
+        // Also ends any session pause, so no pause (and no grace timer) survives an import.
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .remove("pause_until")
+            .putString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed")
+            .remove(ScheduleReceiver.PREF_SESSION_PAUSE_PKG)
+            .remove(ScheduleReceiver.PREF_SESSION_PAUSE_START_MS)
             .apply()
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
         cancelPauseAlarm(context, alarmManager, ScheduleReceiver.ACTION_PAUSE_END, PAUSE_END_REQUEST_CODE)
