@@ -58,6 +58,26 @@ object GrayscaleStateManager {
 
     private var lastSkipReason: String? = null
 
+    // Set while a system surface (app switcher, notification shade, lock screen, power menu) has
+    // forced grayscale on or off through its mode setting. Until that surface closes, re-evaluations
+    // from elsewhere must not undo it. On Pixels every flip relaunches the visible activities; with
+    // our own screen behind the app switcher, its pause and resume re-evaluated and flipped back,
+    // which relaunched the app switcher, which flipped it again: a flicker loop that also emptied
+    // the app switcher. Expires on its own in case a surface ends without us noticing.
+    @Volatile
+    private var surfaceOverrideSince = 0L
+    private const val SURFACE_OVERRIDE_MAX_MS = 120_000L
+
+    fun isSurfaceOverrideActive(): Boolean {
+        val since = surfaceOverrideSince
+        return since != 0L && System.currentTimeMillis() - since < SURFACE_OVERRIDE_MAX_MS
+    }
+
+    /** Called by the service when the system surface is gone and an app is in front again. */
+    fun clearSurfaceOverride() {
+        surfaceOverrideSince = 0L
+    }
+
     private fun prefs(context: Context) =
         context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
 
@@ -87,6 +107,7 @@ object GrayscaleStateManager {
      * comes back even though the setting never changed).
      */
     fun reset(context: Context, reason: String) {
+        clearSurfaceOverride()
         invalidateInternal(context, "reset:$reason", reassert = true, fromToggle = true)
     }
 
@@ -97,6 +118,11 @@ object GrayscaleStateManager {
         fromToggle: Boolean = false,
     ) {
         clearCaches()
+        if (!fromToggle && isSurfaceOverrideActive()) {
+            // Caches are still dropped above, so edits made in the app apply once the surface closes.
+            Log.d(LOG_TAG, "invalidate held: a system surface is in control reason=$reason")
+            return
+        }
         val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
 
         // If the outcome is unambiguous regardless of which app is foreground, apply directly.
@@ -507,6 +533,7 @@ object GrayscaleStateManager {
             "disable" -> applyToSystem(context, Decision.DISABLE, tag)
             else -> return false
         }
+        surfaceOverrideSince = System.currentTimeMillis()
         return true
     }
 

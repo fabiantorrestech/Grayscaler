@@ -197,6 +197,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Also resumed when a colour-mode change relaunches this screen behind the app switcher;
+        // the app switcher's own setting is in control then.
+        if (GrayscaleStateManager.isSurfaceOverrideActive()) return
         val decision = GrayscaleStateManager.evaluateCurrentApp(this, javaClass.name)
         GrayscaleStateManager.applyToSystem(this, decision, "activity_resume")
     }
@@ -568,6 +571,11 @@ private fun MainScreen(
                         "OS Events",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.secondary
+                    )
+                    Text(
+                        "Some launchers and ROMs don't handle these well. On some phones, Pixels for example, every grayscale change reloads the apps on screen, which can empty the app switcher or disrupt these screens. If an option misbehaves, set it to Ignore.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     HomeModeSetting(
                         title = "App Switcher",

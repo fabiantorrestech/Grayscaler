@@ -182,6 +182,8 @@ class MainService : AccessibilityService() {
                 }
                 Intent.ACTION_USER_PRESENT -> {
                     clearExperimentalNotificationShade("user_present")
+                    // Unlocked: the lock screen's mode no longer applies.
+                    GrayscaleStateManager.clearSurfaceOverride()
                     GrayscaleStateManager.invalidate(context, "user_present")
                 }
             }
@@ -314,6 +316,7 @@ class MainService : AccessibilityService() {
         graceHandler.removeCallbacks(pauseEndRunnable)
         cancelStaleRecheck()
         suppressedBySystemUi = false
+        GrayscaleStateManager.clearSurfaceOverride()
         experimentalNotificationShadeActive = false
         experimentalNotificationShadeLastConfirmAt = 0L
         currentBrowserPkg = null
@@ -685,6 +688,7 @@ class MainService : AccessibilityService() {
         // A real foreground app just re-applied grayscale state, so any pending SystemUI-dismissal
         // recovery is satisfied — drop the flag so it can never linger across unrelated events.
         suppressedBySystemUi = false
+        GrayscaleStateManager.clearSurfaceOverride()
 
         // Track browser state; immediately probe URL if this is a browser coming to foreground
         if (pkg in browserPackages) {
@@ -980,6 +984,7 @@ class MainService : AccessibilityService() {
         val target = GrayscaleStateManager.lastMeaningfulForegroundPkg(this) ?: return
         if (active != target) return
         suppressedBySystemUi = false
+        GrayscaleStateManager.clearSurfaceOverride()
         GrayscaleLog.log(this, "recover", "systemui dismissed active=$active -> invalidate")
         GrayscaleStateManager.invalidate(this, "systemui_recover")
     }
