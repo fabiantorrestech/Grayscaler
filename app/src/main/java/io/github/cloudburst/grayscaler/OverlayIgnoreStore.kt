@@ -67,7 +67,8 @@ class OverlayIgnoreStore(private val context: Context) {
         // Known Shizuku distributions for auto-detection
         val KNOWN_SHIZUKU_PACKAGES = listOf(
             "moe.shizuku.privileged.api",
-            "rikka.shizuku"
+            "rikka.shizuku",
+            "af.shizuku.plus.api"
         )
     }
 }

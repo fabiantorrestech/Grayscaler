@@ -74,16 +74,19 @@ class BedtimeStore(private val context: Context) {
 
     fun syncRuntimeState(): Boolean {
         val settings = loadSettings()
-        val withinWindow = isWithinWindow(settings)
-        val charging = isChargingNow()
-        var nextLatch = bedtimeChargeLatchActive
+        val currentLatch = bedtimeChargeLatchActive
+        val currentActive = bedtimeOverrideActive
+        var nextLatch = currentLatch
 
+        // Runs on every grayscale decision, so the battery state (a binder call) is only read in the
+        // branch that needs it, and the flags are only written when they change.
         val active = when {
-            !settings.enabled || settings.days.isEmpty() || !withinWindow -> {
+            !settings.enabled || settings.days.isEmpty() || !isWithinWindow(settings) -> {
                 nextLatch = false
                 false
             }
             settings.activateUponChargingOnly -> {
+                val charging = isChargingNow()
                 if (charging) nextLatch = true
                 val chargingRequirementMet = charging || (settings.stayActivatedAfterUnplugging && nextLatch)
                 chargingRequirementMet && activeScheduleAllowsBedtimeOverride()
@@ -94,10 +97,9 @@ class BedtimeStore(private val context: Context) {
             }
         }
 
-        val changed = bedtimeOverrideActive != active || bedtimeChargeLatchActive != nextLatch
-        bedtimeChargeLatchActive = nextLatch
-        bedtimeOverrideActive = active
-        return changed
+        if (currentLatch != nextLatch) bedtimeChargeLatchActive = nextLatch
+        if (currentActive != active) bedtimeOverrideActive = active
+        return currentActive != active || currentLatch != nextLatch
     }
 
     fun clearRuntimeState() {

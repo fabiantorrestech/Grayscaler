@@ -18,6 +18,15 @@ object GrayscaleStateManager {
     private var scheduleStore: ScheduleStore? = null
     private var perAppViewsStore: PerAppViewsStore? = null
     private var overlayIgnoreStore: OverlayIgnoreStore? = null
+    private var webShortcutStore: WebShortcutStore? = null
+
+    // Keyboard apps are skipped in evaluate(). Asking InputMethodManager is a binder call returning
+    // large objects, so the answer is cached and refreshed only when the enabled-keyboards setting
+    // changes (or, if that setting cannot be read, at most once a minute).
+    private var imeKey: String? = null
+    private var imeCheckedAt = 0L
+    private var imePackages: Set<String> = emptySet()
+    private const val IME_FALLBACK_TTL_MS = 60_000L
 
     private var lastMeaningfulPkg: String? = null
     private var lastMeaningfulClassName: String = ""
@@ -30,7 +39,36 @@ object GrayscaleStateManager {
     @Volatile
     private var generation = 0
     private var lastDevRetoggleAt = 0L
+
+    // When this app last wrote the daltonizer keys. Lets the settings observer tell our own writes
+    // (which also fire it) apart from another app's.
+    @Volatile
+    private var lastWriteAtMs = 0L
+
+    /** When the system grayscale value last changed without Grayscaler+ having written it. 0 = never. */
+    @Volatile
+    var lastExternalChangeAtMs = 0L
+        private set
+    private const val OWN_WRITE_WINDOW_MS = 500L
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // "No daltonizer". An earlier build used it as the colour state; it is cleaned up on the next
+    // write so Android's own Colour correction tile never turns on a filter that does nothing.
+    private const val MODE_NONE = -1
+
+    private var lastSkipReason: String? = null
+
+    private fun prefs(context: Context) =
+        context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+
+    private fun masterEnabled(context: Context) = prefs(context).getBoolean("grayscaler_enabled", true)
+
+    /** True when the system is actually showing grayscale: the filter is on and set to monochrome. */
+    fun isSystemGrayscaleOn(context: Context): Boolean {
+        val resolver = context.contentResolver
+        return Settings.Secure.getInt(resolver, MainService.DISPLAY_DALTONIZER_ENABLED, 0) == MainService.ON &&
+            Settings.Secure.getInt(resolver, MainService.DISPLAY_DALTONIZER, MODE_NONE) == MainService.MONOCHROME
+    }
 
     private const val PREF_LAST_MEANINGFUL_PKG = "last_meaningful_foreground_pkg"
     private const val PREF_LAST_MEANINGFUL_CLASS = "last_meaningful_foreground_class"
@@ -49,21 +87,26 @@ object GrayscaleStateManager {
      * comes back even though the setting never changed).
      */
     fun reset(context: Context, reason: String) {
-        invalidateInternal(context, "reset:$reason", reassert = true)
+        invalidateInternal(context, "reset:$reason", reassert = true, fromToggle = true)
     }
 
-    private fun invalidateInternal(context: Context, reason: String, reassert: Boolean) {
+    private fun invalidateInternal(
+        context: Context,
+        reason: String,
+        reassert: Boolean,
+        fromToggle: Boolean = false,
+    ) {
         clearCaches()
         val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
 
         // If the outcome is unambiguous regardless of which app is foreground, apply directly.
         // This handles cases where there is no last meaningful foreground (e.g. lockscreen).
         if (prefs.getLong("pause_until", 0L) > System.currentTimeMillis()) {
-            applyToSystem(context, Decision.DISABLE, "$reason:paused")
+            applyToSystem(context, Decision.DISABLE, "$reason:paused", fromToggle = fromToggle)
             return
         }
         if (!prefs.getBoolean("grayscaler_enabled", true)) {
-            applyToSystem(context, Decision.DISABLE, "$reason:disabled")
+            applyToSystem(context, Decision.DISABLE, "$reason:disabled", fromToggle = fromToggle)
             return
         }
         val bedtimeStore = BedtimeStore(context)
@@ -106,6 +149,28 @@ object GrayscaleStateManager {
         scheduleStore = null
         perAppViewsStore = null
         overlayIgnoreStore = null
+        webShortcutStore = null
+    }
+
+    /** The user's web shortcut rules, loaded once and dropped with the other cached stores. */
+    fun webShortcutStore(context: Context): WebShortcutStore =
+        webShortcutStore ?: WebShortcutStore(context).also { it.load(); webShortcutStore = it }
+
+    private fun imePackages(context: Context): Set<String> {
+        val key = try {
+            Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_INPUT_METHODS)
+        } catch (_: Throwable) {
+            null
+        }
+        val now = System.currentTimeMillis()
+        val stale = if (key != null) key != imeKey else now - imeCheckedAt > IME_FALLBACK_TTL_MS
+        if (stale || imeCheckedAt == 0L) {
+            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            imePackages = imm.enabledInputMethodList.mapTo(HashSet()) { it.packageName }
+            imeKey = key
+            imeCheckedAt = now
+        }
+        return imePackages
     }
 
     fun evaluateCurrentApp(context: Context, className: String): Decision {
@@ -148,8 +213,7 @@ object GrayscaleStateManager {
         if (!bypassIgnore && effectiveIgnoreList.contains(pkg)) return Decision.SKIP
 
         // Skip keyboard/IME packages
-        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        if (imm.enabledInputMethodList.any { it.packageName == pkg }) return Decision.SKIP
+        if (pkg in imePackages(context)) return Decision.SKIP
 
         rememberMeaningfulForeground(context, pkg, className)
 
@@ -187,28 +251,44 @@ object GrayscaleStateManager {
      * The single writer of the system daltonizer keys.
      *
      * @param reason short tag naming what triggered this write; shows up in logcat and the log file.
-     * @param reassert when true and the decision is ENABLE while the Secure value already reads
-     *   "on", force a real OFF -> ON transition. Re-writing the same value is a no-op for the
-     *   system's colour observer, so without this a dropped transform stays dropped.
+     * @param reassert when true and grayscale is already showing, force a real change and back, so a
+     *   colour transform the OS dropped is re-applied. Re-writing the same value is a no-op for the
+     *   system's colour observer.
+     * @param fromToggle true only for the global on/off switch. While Grayscaler+ is switched off
+     *   every other caller is ignored: a disabled Grayscaler+ does not own the setting, so it must
+     *   not undo grayscale that the user, Bedtime mode or another app turned on. The toggle itself
+     *   still writes once, to clear our own filter when switching off.
      */
     fun applyToSystem(
         context: Context,
         decision: Decision,
         reason: String = "unspecified",
         reassert: Boolean = false,
+        fromToggle: Boolean = false,
     ) {
         if (decision == Decision.SKIP) return
+        val master = masterEnabled(context)
+        if (!master && !fromToggle) {
+            if (reason != lastSkipReason) {
+                lastSkipReason = reason
+                Log.d(LOG_TAG, "apply skipped (Grayscaler+ is off) decision=$decision reason=$reason")
+            }
+            return
+        }
+        lastSkipReason = null
         val prev = lastDecision
         val gen = ++generation
         val resolver = context.contentResolver
         try {
+            lastWriteAtMs = System.currentTimeMillis()
+            val curEnabled = Settings.Secure.getInt(resolver, MainService.DISPLAY_DALTONIZER_ENABLED, -1)
+            val curMode = Settings.Secure.getInt(resolver, MainService.DISPLAY_DALTONIZER, MODE_NONE)
             if (decision == Decision.ENABLE) {
-                val curEnabled = Settings.Secure.getInt(resolver, MainService.DISPLAY_DALTONIZER_ENABLED, -1)
-                if (curEnabled == MainService.ON && shouldReassert(context, reassert)) {
+                val alreadyGray = curEnabled == MainService.ON && curMode == MainService.MONOCHROME
+                if (alreadyGray && shouldReassert(context, reassert)) {
                     // The two writes must be separated in time: the system observer reads the value
                     // when it dispatches, so OFF immediately followed by ON is seen as "still ON".
                     Settings.Secure.putInt(resolver, MainService.DISPLAY_DALTONIZER_ENABLED, MainService.OFF)
-                    Settings.Secure.putInt(resolver, MainService.DISPLAY_DALTONIZER, MainService.MONOCHROME)
                     lastDecision = decision
                     Log.i(LOG_TAG, "apply decision=ENABLE reason=$reason prev=$prev reassert=pending")
                     GrayscaleLog.log(context, "apply", "reassert OFF->ON scheduled reason=$reason")
@@ -218,6 +298,7 @@ object GrayscaleStateManager {
                         // already wrote ON) supersedes this one.
                         if (generation != gen) return@postDelayed
                         try {
+                            lastWriteAtMs = System.currentTimeMillis()
                             Settings.Secure.putInt(
                                 appContext.contentResolver,
                                 MainService.DISPLAY_DALTONIZER_ENABLED,
@@ -230,10 +311,20 @@ object GrayscaleStateManager {
                     }, REASSERT_GAP_MS)
                     return
                 }
-                Settings.Secure.putInt(resolver, MainService.DISPLAY_DALTONIZER, MainService.MONOCHROME)
-                Settings.Secure.putInt(resolver, MainService.DISPLAY_DALTONIZER_ENABLED, MainService.ON)
+                // Only write what differs: a same-value write is still a binder call.
+                if (curMode != MainService.MONOCHROME) {
+                    Settings.Secure.putInt(resolver, MainService.DISPLAY_DALTONIZER, MainService.MONOCHROME)
+                }
+                if (curEnabled != MainService.ON) {
+                    Settings.Secure.putInt(resolver, MainService.DISPLAY_DALTONIZER_ENABLED, MainService.ON)
+                }
             } else {
-                Settings.Secure.putInt(resolver, MainService.DISPLAY_DALTONIZER_ENABLED, MainService.OFF)
+                if (curEnabled != MainService.OFF) {
+                    Settings.Secure.putInt(resolver, MainService.DISPLAY_DALTONIZER_ENABLED, MainService.OFF)
+                }
+                if (curMode == MODE_NONE) {
+                    Settings.Secure.putInt(resolver, MainService.DISPLAY_DALTONIZER, MainService.MONOCHROME)
+                }
             }
             // Record the belief only after the write actually succeeded. Setting it beforehand let
             // the app's notion of "on" diverge from the screen when the write threw — a root cause
@@ -269,9 +360,11 @@ object GrayscaleStateManager {
             val resolver = context.contentResolver
             val actualEnabled = Settings.Secure.getInt(resolver, MainService.DISPLAY_DALTONIZER_ENABLED, -1)
             val actualMode = Settings.Secure.getInt(resolver, MainService.DISPLAY_DALTONIZER, -1)
-            val expectEnabled = if (decision == Decision.ENABLE) MainService.ON else MainService.OFF
-            val consistent = actualEnabled == expectEnabled &&
-                (decision != Decision.ENABLE || actualMode == MainService.MONOCHROME)
+            val consistent = if (decision == Decision.ENABLE) {
+                actualEnabled == MainService.ON && actualMode == MainService.MONOCHROME
+            } else {
+                actualEnabled == MainService.OFF
+            }
             val verdict = if (consistent) "OK" else "MISMATCH"
             val line = "decision=$decision reason=$reason prev=$prev " +
                 "readback[enabled=$actualEnabled mode=$actualMode] $verdict"
@@ -299,14 +392,35 @@ object GrayscaleStateManager {
         }
     }
 
+    /**
+     * Called by the service's settings observer whenever the system grayscale value changes. If the
+     * new value disagrees with our last decision and we did not just write it, another app changed
+     * it. This only records and logs the fact. It deliberately does not re-apply: while the other app
+     * is still active that would just add more flips, and each flip is expensive on some devices.
+     */
+    fun onSystemValueChanged(context: Context) {
+        val belief = lastDecision ?: return
+        if (!masterEnabled(context)) return
+        val now = System.currentTimeMillis()
+        if (now - lastWriteAtMs < OWN_WRITE_WINDOW_MS) return
+        val gray = try {
+            isSystemGrayscaleOn(context)
+        } catch (_: Throwable) {
+            return
+        }
+        if (gray == (belief == Decision.ENABLE)) return
+        lastExternalChangeAtMs = now
+        val line = "external change grayscale=$gray belief=$belief (not written by Grayscaler+)"
+        Log.w(LOG_TAG, line)
+        GrayscaleLog.log(context, "external", line)
+    }
+
     /** True when the system Secure value agrees with what this app last decided. */
     fun systemMatchesBelief(context: Context): Boolean {
         val belief = lastDecision ?: return true
+        if (!masterEnabled(context)) return true
         return try {
-            val actual = Settings.Secure.getInt(
-                context.contentResolver, MainService.DISPLAY_DALTONIZER_ENABLED, -1
-            )
-            actual == if (belief == Decision.ENABLE) MainService.ON else MainService.OFF
+            isSystemGrayscaleOn(context) == (belief == Decision.ENABLE)
         } catch (_: Throwable) {
             true
         }
@@ -342,6 +456,7 @@ object GrayscaleStateManager {
             append(" last_decision=").append(lastDecision)
             append(" os_daltonizer_enabled=").append(osEnabled)
             append(" os_daltonizer=").append(osMode)
+            append(" display_color_mode=").append(DisplayColorMode.current(context))
         }
     }
 
@@ -407,6 +522,7 @@ object GrayscaleStateManager {
     }
 
     private fun rememberMeaningfulForeground(context: Context, pkg: String, className: String) {
+        if (pkg == lastMeaningfulPkg && className == lastMeaningfulClassName) return
         lastMeaningfulPkg = pkg
         lastMeaningfulClassName = className
         context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)

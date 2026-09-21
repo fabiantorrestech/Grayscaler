@@ -110,20 +110,20 @@ class MainActivity : ComponentActivity() {
                 thread {
                     val barrier = CyclicBarrier(if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) 5 else 4)
                     command("pm grant ${packageName} android.permission.WRITE_SECURE_SETTINGS") { msg, _, error ->
-                        if (error) Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                        if (error) runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
                         barrier.await()
                     }
                     command("pm grant ${packageName} android.permission.PACKAGE_USAGE_STATS") { msg, _, error ->
-                        if (error) Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                        if (error) runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
                         barrier.await()
                     }
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R)
                         command("pm grant ${packageName} android.permission.QUERY_ALL_PACKAGES") { msg, _, error ->
-                            if (error) Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                            if (error) runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
                             barrier.await()
                         }
                     command("appops set ${packageName} SYSTEM_ALERT_WINDOW allow") { msg, _, error ->
-                        if (error) Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                        if (error) runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
                         barrier.await()
                     }
                     barrier.await()

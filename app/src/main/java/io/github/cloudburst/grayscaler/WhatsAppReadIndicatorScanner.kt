@@ -35,7 +35,32 @@ class WhatsAppReadIndicatorScanner(
      * voice-note rows tend to report status this way instead of on a small tick node. Resolved to
      * real tick bounds after the walk, once every timestamp node is known.
      */
-    private data class StatusContainer(val rect: Rect, val kind: Kind)
+    private data class StatusContainer(val rect: Rect, val kind: Kind, val covers: List<Cover>)
+
+    /**
+     * Something drawn on top of part of the tree being walked: a sibling of the node (or of one of
+     * its ancestors) that is drawn later. WhatsApp's gallery picker is one: it is a sheet inside the
+     * conversation window, so the message rows stay in the accessibility tree underneath it.
+     */
+    private data class Cover(val rect: Rect, val name: String)
+
+    // Result of the last scan that used a screenshot, and what the tree looked like then. A scan
+    // that finds the same tree within LAST_SCAN_MAX_AGE_MS reuses the labels instead of copying a
+    // full-screen bitmap again. A status change also changes the tick's description, so it shows
+    // up in the signature; the age limit covers pixel-only changes (chat list, id-only ticks).
+    private var lastSignature: String? = null
+    private var lastLabels: List<Label>? = null
+    private var lastScanAtMs = 0L
+
+    fun forgetLastScan() {
+        lastSignature = null
+        lastLabels = null
+    }
+
+    /** Accessibility window id of the tree the last scan read (WhatsApp's window), or -1. */
+    @Volatile
+    var lastWindowId = -1
+        private set
 
     /** When the last screenshot was requested. MainService spaces captures out using this. */
     @Volatile
@@ -53,6 +78,7 @@ class WhatsAppReadIndicatorScanner(
             callback.onResult(emptyList())
             return
         }
+        lastWindowId = root.windowId
         val candidates = mutableListOf<Candidate>()
         val containers = mutableListOf<StatusContainer>()
         val timestampAnchors = mutableListOf<Rect>()
@@ -62,7 +88,7 @@ class WhatsAppReadIndicatorScanner(
         val tabHits = mutableSetOf<String>()
         val convoDebugLines = if (debugDumpDescriptions) mutableListOf<String>() else null
         try {
-            collectCandidates(root, candidates, containers, timestampAnchors, conversationTimestamps, tabHits, depth = 0, debugDumpDescriptions, convoDebugLines)
+            collectCandidates(root, candidates, containers, timestampAnchors, conversationTimestamps, tabHits, depth = 0, debugDumpDescriptions, convoDebugLines, covers = emptyList())
         } finally {
             root.recycle()
         }
@@ -93,6 +119,21 @@ class WhatsAppReadIndicatorScanner(
             callback.onResult(emptyList())
             return
         }
+        val signature = buildString {
+            append(isChatListView).append('#')
+            candidates.forEach { append(it.bounds.flattenToString()).append(it.kind).append(it.source).append(';') }
+            append('#')
+            timestampAnchors.forEach { append(it.flattenToString()).append(';') }
+            append('#')
+            conversationTimestamps.forEach { append(it.rect.flattenToString()).append(it.time).append(';') }
+        }
+        val reusable = lastLabels
+        if (reusable != null && signature == lastSignature &&
+            System.currentTimeMillis() - lastScanAtMs < LAST_SCAN_MAX_AGE_MS
+        ) {
+            callback.onResult(reusable)
+            return
+        }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             // No screenshot path on older devices — only the contentDescription fallback is usable.
             // Timestamp pairing is geometry-only, so it still works here.
@@ -103,7 +144,7 @@ class WhatsAppReadIndicatorScanner(
             })
             return
         }
-        captureAndClassify(candidates, timestampAnchors, conversationTimestamps, isChatListView, debugDumpDescriptions, convoDebugLines, callback)
+        captureAndClassify(candidates, timestampAnchors, conversationTimestamps, isChatListView, debugDumpDescriptions, convoDebugLines, signature, callback)
     }
 
     private fun collectCandidates(
@@ -116,6 +157,7 @@ class WhatsAppReadIndicatorScanner(
         depth: Int,
         debugDumpDescriptions: Boolean,
         convoDebugLines: MutableList<String>?,
+        covers: List<Cover>,
     ) {
         if (depth > MAX_TREE_DEPTH) return
         // Capture any node whose whole text/desc is a clock time, for conversation-view pairing.
@@ -154,15 +196,19 @@ class WhatsAppReadIndicatorScanner(
                 // is a trailing, delimited token ("Photo, 10:30 PM, Read"), so a caption such as
                 // "I sent it" cannot produce a chip.
                 val containerKind = if (!passWidth && !rect.isEmpty) trailingStatusKind(desc) else null
-                if (passWidth) {
+                val cover = if (passWidth) coveredBy(rect, covers) else null
+                val sliver = passWidth && isSliver(rect)
+                if (passWidth && cover == null && !sliver) {
                     out += Candidate(rect, kind, SOURCE_DESC)
                 } else if (containerKind != null) {
-                    containers += StatusContainer(rect, containerKind)
+                    containers += StatusContainer(rect, containerKind, covers)
                 }
                 if (convoDebugLines != null) {
                     val short = if (desc.length > 80) desc.substring(0, 80) + "…" else desc
                     val verdict = when {
                         rect.isEmpty -> "REJECT-empty-bounds"
+                        cover != null -> "COVERED-by ${cover.name}"
+                        sliver -> "REJECT-sliver"
                         passWidth -> "ACCEPT"
                         containerKind != null -> "CONTAINER(${widthDp}dp)"
                         else -> "REJECT-width(${widthDp}dp > ${MAX_STATUS_NODE_WIDTH_DP}dp)"
@@ -191,21 +237,72 @@ class WhatsAppReadIndicatorScanner(
                 node.getBoundsInScreen(rect)
                 val density = service.resources.displayMetrics.density
                 val narrow = !rect.isEmpty && rect.width() <= (MAX_STATUS_NODE_WIDTH_DP * density).toInt()
-                if (narrow) out += Candidate(rect, null, SOURCE_ID)
+                val cover = if (narrow) coveredBy(rect, covers) else null
+                val sliver = narrow && isSliver(rect)
+                if (narrow && cover == null && !sliver) out += Candidate(rect, null, SOURCE_ID)
                 convoDebugLines?.add(
-                    "id=$viewId bounds=${rect.toShortString()} " + if (narrow) "ACCEPT-by-id" else "REJECT-by-id"
+                    "id=$viewId bounds=${rect.toShortString()} " + when {
+                        !narrow -> "REJECT-by-id"
+                        cover != null -> "COVERED-by ${cover.name}"
+                        sliver -> "REJECT-sliver"
+                        else -> "ACCEPT-by-id"
+                    }
                 )
             }
         }
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            try {
-                collectCandidates(child, out, containers, timestampAnchors, conversationTimestamps, tabHits, depth + 1, debugDumpDescriptions, convoDebugLines)
-            } finally {
-                child.recycle()
+        // Children are fetched up front because whether one child is covered depends on its
+        // siblings: any sibling drawn later (higher drawing order, which is NOT the child index)
+        // sits on top of it and of everything beneath it.
+        val children = ArrayList<AccessibilityNodeInfo>(node.childCount)
+        for (i in 0 until node.childCount) node.getChild(i)?.let { children += it }
+        try {
+            val drawn = children.map { child ->
+                val rect = Rect().also { child.getBoundsInScreen(it) }
+                DrawnChild(rect, child.drawingOrder, if (isCover(child, rect)) coverName(child) else null)
             }
+            for ((index, child) in children.withIndex()) {
+                val mine = drawn[index]
+                var added: ArrayList<Cover>? = null
+                for ((otherIndex, other) in drawn.withIndex()) {
+                    if (otherIndex == index || other.coverName == null || other.order <= mine.order) continue
+                    val list = added ?: ArrayList(covers).also { added = it }
+                    list.add(Cover(other.rect, other.coverName))
+                }
+                collectCandidates(child, out, containers, timestampAnchors, conversationTimestamps, tabHits, depth + 1, debugDumpDescriptions, convoDebugLines, added ?: covers)
+            }
+        } finally {
+            children.forEach { it.recycle() }
         }
     }
+
+    private class DrawnChild(val rect: Rect, val order: Int, val coverName: String?)
+
+    /**
+     * Whether a later-drawn sibling really hides what is under it. WhatsApp keeps invisible
+     * full-size placeholders on top of the message list (a video stub, a drag-and-drop overlay);
+     * counting those would hide every label all the time. They are empty leaves, so a cover must
+     * have children, or text, or be an image.
+     */
+    private fun isCover(node: AccessibilityNodeInfo, rect: Rect): Boolean {
+        if (rect.isEmpty || !node.isVisibleToUser) return false
+        return node.childCount > 0 ||
+            !node.text.isNullOrEmpty() ||
+            !node.contentDescription.isNullOrEmpty() ||
+            node.className?.endsWith("ImageView") == true
+    }
+
+    private fun coverName(node: AccessibilityNodeInfo): String =
+        node.viewIdResourceName?.substringAfterLast('/') ?: shortClassName(node.className)
+
+    private fun coveredBy(rect: Rect, covers: List<Cover>): Cover? {
+        val x = rect.centerX()
+        val y = rect.centerY()
+        return covers.firstOrNull { it.rect.contains(x, y) }
+    }
+
+    /** A tick clipped by the edge of the list: only a few pixels of its row are on screen. */
+    private fun isSliver(rect: Rect): Boolean =
+        rect.height() < (MIN_TICK_HEIGHT_DP * service.resources.displayMetrics.density).toInt()
 
     /**
      * Records this node as a conversation timestamp iff its text or contentDescription is, in its
@@ -254,6 +351,11 @@ class WhatsAppReadIndicatorScanner(
             // The strip may run slightly past the container: the tick sits in the bubble's padding.
             val strip = Rect(ts.rect.right, ts.rect.top, ts.rect.right + stripWidthPx, ts.rect.bottom)
             if (strip.width() < minStripPx || strip.height() <= 0) continue
+            val cover = coveredBy(strip, c.covers)
+            if (cover != null) {
+                convoDebugLines?.add("  container ${c.rect.toShortString()} strip COVERED-by ${cover.name}")
+                continue
+            }
             out += Candidate(strip, c.kind, SOURCE_CONTAINER)
             convoDebugLines?.add(
                 "  container ${c.rect.toShortString()} kind=${c.kind.label} -> strip ${strip.toShortString()}"
@@ -276,7 +378,7 @@ class WhatsAppReadIndicatorScanner(
     private fun trailingStatusKind(desc: String): Kind? {
         val word = TRAILING_STATUS_PATTERN.find(desc)?.groupValues?.get(1)?.lowercase(Locale.US) ?: return null
         return when (word) {
-            "read" -> Kind.READ
+            "read", "seen" -> Kind.READ
             "delivered" -> Kind.DELIVERED
             "sent" -> Kind.SENT
             else -> null
@@ -333,6 +435,7 @@ class WhatsAppReadIndicatorScanner(
         isChatListView: Boolean,
         debug: Boolean,
         convoDebugLines: MutableList<String>?,
+        signature: String,
         callback: ResultCallback,
     ) {
         lastCaptureAtMs = System.currentTimeMillis()
@@ -378,6 +481,9 @@ class WhatsAppReadIndicatorScanner(
                                 val header = "scan: ${candidates.size} accepted candidates, view=conversation, labels=${labels.size}"
                                 writeConvoSummary("$header\n" + convoDebugLines.joinToString("\n"))
                             }
+                            lastSignature = signature
+                            lastLabels = labels
+                            lastScanAtMs = System.currentTimeMillis()
                             callback.onResult(labels)
                         } finally {
                             hb.close()
@@ -837,7 +943,7 @@ class WhatsAppReadIndicatorScanner(
         // Negative lookahead on (more|less) excludes WhatsApp's "Read more" / "Read less" expander
         // on long incoming messages, which would otherwise be classified as a Read status by the
         // pixel-color path (the expander is blue text).
-        private val READ_PATTERN = Regex("\\bread\\b(?!\\s+(?:more|less))", RegexOption.IGNORE_CASE)
+        private val READ_PATTERN = Regex("\\b(?:read|seen)\\b(?!\\s+(?:more|less))", RegexOption.IGNORE_CASE)
         private val DELIVERED_PATTERN = Regex("\\b(?:delivered)\\b", RegexOption.IGNORE_CASE)
         private val SENT_PATTERN = Regex("\\b(?:sent)\\b", RegexOption.IGNORE_CASE)
 
@@ -845,6 +951,8 @@ class WhatsAppReadIndicatorScanner(
         // status icons are tiny ImageView nodes (~12-18dp wide); any candidate whose bounds exceed
         // this width is almost certainly a TextView (e.g. "Read more" expander) and gets rejected.
         private const val MAX_STATUS_NODE_WIDTH_DP = 40
+        private const val MIN_TICK_HEIGHT_DP = 6
+        private const val LAST_SCAN_MAX_AGE_MS = 10_000L
 
         private const val SOURCE_DESC = 0
         private const val SOURCE_ID = 1
@@ -855,7 +963,7 @@ class WhatsAppReadIndicatorScanner(
 
         // Status word as the last delimited token of a longer description.
         private val TRAILING_STATUS_PATTERN = Regex(
-            """(?:^|[,;\n])\s*(read|delivered|sent)\s*\.?\s*$""",
+            """(?:^|[,;\n])\s*(read|seen|delivered|sent)\s*\.?\s*$""",
             RegexOption.IGNORE_CASE
         )
         // Media-bubble geometry: tick strip to the right of the bottom timestamp.

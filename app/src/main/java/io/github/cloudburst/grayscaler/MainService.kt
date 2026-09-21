@@ -12,6 +12,7 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -32,6 +33,7 @@ import java.util.Locale
 import kotlin.math.abs
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
@@ -53,6 +55,11 @@ class MainService : AccessibilityService() {
     private var overlayLifecycleOwner: OverlayLifecycleOwner? = null
     private var countdownOverlay: PauseCountdownOverlayManager? = null
     private var overlayPresentationKey by mutableIntStateOf(0)
+    // True only while the persistent pause popup is on screen; its once-a-second clock stops otherwise.
+    private var overlayShown by mutableStateOf(false)
+
+    // Event types currently requested from the system (see updateEventSubscription).
+    private var subscribedEventTypes = -1
 
     private val graceHandler = Handler(Looper.getMainLooper())
     private val graceRunnable = Runnable {
@@ -122,7 +129,31 @@ class MainService : AccessibilityService() {
     // filter (skip rescans triggered by the user's own typing while labels are already up) and by
     // the heartbeat (kick a rescan if we somehow have no labels while in a healthy WhatsApp state).
     private var whatsAppOverlayHasLabels = false
+
+    // Every label from the last scan. What is drawn is this minus the ones another window covers
+    // (a floating overlay, a bubble, the keyboard, our own pause popup), recomputed whenever the
+    // set of windows on screen changes, without rescanning.
+    private var whatsAppAllLabels: List<WhatsAppReadIndicatorScanner.Label> = emptyList()
+    private var whatsAppCoverSummary = ""
+    private val whatsAppCoverRunnable = Runnable { applyWindowCovers() }
     private var whatsAppHeartbeatTick = 0
+
+    // Set when System UI (a heads-up banner, the shade, the power menu) took the labels down while
+    // WhatsApp was in front. WhatsApp never loses focus in that case, so no WhatsApp window event
+    // arrives afterwards; the heartbeat keeps ticking for a while and puts the labels back as soon
+    // as WhatsApp is the active window again.
+    private var whatsAppAwaitingReturn = false
+    private var whatsAppAwaitTicksLeft = 0
+
+    // Ends a timed pause on time. The AlarmManager alarm that also ends it is inexact and can fire
+    // late; this service is alive whenever the screen is on, so it does the punctual part and the
+    // alarm stays as the backup for when the service is not running.
+    private val pauseEndRunnable = Runnable {
+        val until = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE).getLong("pause_until", 0L)
+        if (until != 0L && until <= System.currentTimeMillis() + PAUSE_END_SLACK_MS) {
+            sendBroadcast(Intent(ScheduleReceiver.ACTION_PAUSE_END).apply { setPackage(packageName) })
+        }
+    }
     private var lastWhatsAppHealMs = 0L
     private val whatsAppHeartbeatRunnable = Runnable { runWhatsAppHeartbeat() }
 
@@ -157,6 +188,14 @@ class MainService : AccessibilityService() {
         }
     }
 
+    // Watches the system grayscale value so writes made by another app (e.g. a second app with its
+    // own grayscale feature) show up in the log instead of looking like random flicker.
+    private val daltonizerObserver = object : android.database.ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) {
+            GrayscaleStateManager.onSystemValueChanged(this@MainService)
+        }
+    }
+
     private val overlayReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == ACTION_SHOW_PAUSE_OVERLAY) showPersistentOverlay()
@@ -170,6 +209,7 @@ class MainService : AccessibilityService() {
             }
             "pause_until" -> {
                 val pauseUntil = prefs.getLong("pause_until", 0L)
+                armPauseEndTimer(pauseUntil)
                 if (pauseUntil > System.currentTimeMillis()) {
                     countdownOverlay?.show(pauseUntil)
                 } else if (prefs.getString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed") != "session") {
@@ -200,6 +240,7 @@ class MainService : AccessibilityService() {
             "grayscaler_enabled",
             "session_pause_pkg",
             PREF_WHATSAPP_READ_INDICATOR_ENABLED -> reevaluateWhatsAppActiveState()
+            PREF_EXPERIMENTAL_NOTIFICATION_SHADE_ENABLED -> updateEventSubscription()
         }
     }
 
@@ -224,6 +265,16 @@ class MainService : AccessibilityService() {
 
         val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
         prefs.registerOnSharedPreferenceChangeListener(prefChangeListener)
+
+        // Both keys: with seamless switching the enabled flag stays on and the mode key carries the
+        // gray/colour state, so another app's write could land on either one.
+        for (key in listOf(DISPLAY_DALTONIZER_ENABLED, DISPLAY_DALTONIZER)) {
+            contentResolver.registerContentObserver(
+                android.provider.Settings.Secure.getUriFor(key),
+                false,
+                daltonizerObserver
+            )
+        }
     }
 
     override fun onServiceConnected() {
@@ -232,6 +283,7 @@ class MainService : AccessibilityService() {
         if (prefs.getBoolean("persistent_overlay_mode", false)) registerPersistentOverlay()
         val pauseUntil = prefs.getLong("pause_until", 0L)
         val pauseType = prefs.getString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed") ?: "timed"
+        armPauseEndTimer(pauseUntil)
         when {
             pauseUntil > System.currentTimeMillis() -> countdownOverlay?.show(pauseUntil)
             pauseType == "session" -> {
@@ -243,6 +295,7 @@ class MainService : AccessibilityService() {
         // Accessibility settings, or an OS-initiated restart, the system Secure value may no longer
         // match the master switch and nothing else re-applies it until the next window event.
         instance = this
+        updateEventSubscription()
         GrayscaleLog.log(this, "serviceConnected", "reconciling grayscale state")
         GrayscaleStateManager.invalidate(this, "service_connected")
     }
@@ -258,6 +311,7 @@ class MainService : AccessibilityService() {
             return
         }
         graceHandler.removeCallbacks(graceRunnable)
+        graceHandler.removeCallbacks(pauseEndRunnable)
         cancelStaleRecheck()
         suppressedBySystemUi = false
         experimentalNotificationShadeActive = false
@@ -271,16 +325,19 @@ class MainService : AccessibilityService() {
             prefs.getString(ScheduleReceiver.PREF_PAUSE_TYPE, "timed") == "session"
         if (!paused) countdownOverlay?.hide()
         reevaluateWhatsAppActiveState()
+        updateEventSubscription()
         GrayscaleLog.log(this, "reset", "transient service state cleared")
     }
 
     override fun onDestroy() {
         if (instance === this) instance = null
         graceHandler.removeCallbacks(graceRunnable)
+        graceHandler.removeCallbacks(pauseEndRunnable)
         cancelStaleRecheck()
         whatsAppScanHandler.removeCallbacks(whatsAppScanRunnable)
         whatsAppScanHandler.removeCallbacks(whatsAppRetryRunnable)
         whatsAppScanHandler.removeCallbacks(whatsAppHeartbeatRunnable)
+        contentResolver.unregisterContentObserver(daltonizerObserver)
         unregisterReceiver(screenReceiver)
         unregisterReceiver(overlayReceiver)
         getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
@@ -319,6 +376,7 @@ class MainService : AccessibilityService() {
                 GrayscalerTheme {
                     PauseOverlayContent(
                         presentationKey = overlayPresentationKey,
+                        active = overlayShown,
                         onDismiss = { hidePersistentOverlay() },
                         onOpenApp = {
                             startActivity(
@@ -352,6 +410,7 @@ class MainService : AccessibilityService() {
             WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
         windowManager.updateViewLayout(view, params)
         view.visibility = View.VISIBLE
+        overlayShown = true
         if (!wasVisible) {
             overlayPresentationKey += 1
         }
@@ -362,6 +421,7 @@ class MainService : AccessibilityService() {
         val view = overlayView ?: return
         val params = overlayParams ?: return
         view.visibility = View.GONE
+        overlayShown = false
         params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
         windowManager.updateViewLayout(view, params)
@@ -377,6 +437,15 @@ class MainService : AccessibilityService() {
         val activeRootPkg: String? =
             if (isWhatsAppForegrounded || suppressedBySystemUi) activeRootPackage() else null
         checkWhatsAppObscuredTransition(activeRootPkg)
+
+        // Another window appeared, moved or went away while labels are up: re-check which labels it
+        // covers. Coalesced, because opening a window produces a short burst of these events.
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
+            isWhatsAppForegrounded && whatsAppAllLabels.isNotEmpty()
+        ) {
+            whatsAppScanHandler.removeCallbacks(whatsAppCoverRunnable)
+            whatsAppScanHandler.postDelayed(whatsAppCoverRunnable, WHATSAPP_COVER_COALESCE_MS)
+        }
 
         // Restore grayscale once a SystemUI surface that disabled it is dismissed. Runs on every
         // event (including TYPE_WINDOWS_CHANGED, which fires on shade/power-menu dismiss when no
@@ -438,8 +507,7 @@ class MainService : AccessibilityService() {
                         (types and AccessibilityEvent.CONTENT_CHANGE_TYPE_TEXT.inv()) == 0
                     if (onlyTextChange && whatsAppOverlayHasLabels) return
                     // Content moved — wipe stale labels and re-scan once events settle.
-                    whatsAppOverlay.clear()
-                    whatsAppOverlayHasLabels = false
+                    clearWhatsAppLabels()
                     scheduleWhatsAppScan()
                     return
                 }
@@ -549,7 +617,13 @@ class MainService : AccessibilityService() {
 
     private fun enterSystemUiSurface() {
         cancelStaleRecheck()
-        exitWhatsAppActiveState()
+        exitWhatsAppActiveState(keepWatching = true)
+    }
+
+    private fun armPauseEndTimer(pauseUntil: Long) {
+        graceHandler.removeCallbacks(pauseEndRunnable)
+        val delay = pauseUntil - System.currentTimeMillis()
+        if (delay > 0) graceHandler.postDelayed(pauseEndRunnable, delay)
     }
 
     private fun scheduleStaleRecheck(pkg: String, className: String) {
@@ -623,6 +697,37 @@ class MainService : AccessibilityService() {
 
         maybeRunWhatsAppColorProbe(pkg)
         updateWhatsAppActiveState(pkg)
+        updateEventSubscription()
+    }
+
+    /**
+     * Content-change and scroll events arrive from every app, dozens per second while anything
+     * scrolls, and each one wakes this process. Only three things use them: the WhatsApp labels,
+     * the browser URL rules and the experimental shade detection. So request them only while one
+     * of those needs them. The window-state event that makes one of them start needing them always
+     * comes first, and that event type is always subscribed, so nothing is missed.
+     */
+    private fun updateEventSubscription() {
+        val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+        val whatsApp = prefs.getBoolean(PREF_WHATSAPP_READ_INDICATOR_ENABLED, false) &&
+            (isWhatsAppForegrounded || whatsAppAwaitingReturn)
+        val shade = prefs.getBoolean(PREF_EXPERIMENTAL_NOTIFICATION_SHADE_ENABLED, false)
+        var mask = BASE_EVENT_TYPES
+        if (whatsApp || shade || currentBrowserPkg != null) {
+            mask = mask or AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        }
+        if (whatsApp) mask = mask or AccessibilityEvent.TYPE_VIEW_SCROLLED
+        if (mask == subscribedEventTypes) return
+        try {
+            val info = serviceInfo ?: return
+            info.eventTypes = mask
+            serviceInfo = info
+            subscribedEventTypes = mask
+            Log.d(TAG, "event subscription: content=${mask and AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED != 0} " +
+                "scroll=${mask and AccessibilityEvent.TYPE_VIEW_SCROLLED != 0}")
+        } catch (_: Throwable) {
+            // Not connected (yet, or any more); the next call retries.
+        }
     }
 
     private fun updateWhatsAppActiveState(pkg: String) {
@@ -640,6 +745,7 @@ class MainService : AccessibilityService() {
                 whatsAppScanHandler.removeCallbacks(whatsAppHeartbeatRunnable)
                 whatsAppScanHandler.postDelayed(whatsAppHeartbeatRunnable, WHATSAPP_HEARTBEAT_INTERVAL_MS)
             }
+            updateEventSubscription()
         } else {
             exitWhatsAppActiveState()
         }
@@ -681,16 +787,32 @@ class MainService : AccessibilityService() {
         updateWhatsAppActiveState(rootPkg)
     }
 
-    private fun exitWhatsAppActiveState() {
+    /**
+     * @param keepWatching true when System UI, not another app, is the reason for leaving. The
+     *   labels still come down, but the heartbeat keeps running so they return by themselves.
+     */
+    private fun exitWhatsAppActiveState(keepWatching: Boolean = false) {
         if (!isWhatsAppForegrounded && !::whatsAppOverlay.isInitialized) return
+        val wasWatching = isWhatsAppForegrounded || whatsAppAwaitingReturn
         isWhatsAppForegrounded = false
         isWhatsAppObscuredBySystemUi = false
         whatsAppEmptyRetryCount = 0
         whatsAppOverlayHasLabels = false
+        whatsAppAllLabels = emptyList()
         whatsAppScanHandler.removeCallbacks(whatsAppScanRunnable)
         whatsAppScanHandler.removeCallbacks(whatsAppRetryRunnable)
         whatsAppScanHandler.removeCallbacks(whatsAppHeartbeatRunnable)
+        whatsAppScanHandler.removeCallbacks(whatsAppCoverRunnable)
+        if (keepWatching && wasWatching) {
+            whatsAppAwaitingReturn = true
+            whatsAppAwaitTicksLeft = WHATSAPP_AWAIT_RETURN_TICKS
+            whatsAppScanHandler.postDelayed(whatsAppHeartbeatRunnable, WHATSAPP_HEARTBEAT_INTERVAL_MS)
+        } else {
+            whatsAppAwaitingReturn = false
+            if (::whatsAppScanner.isInitialized) whatsAppScanner.forgetLastScan()
+        }
         if (::whatsAppOverlay.isInitialized) whatsAppOverlay.hide()
+        updateEventSubscription()
     }
 
     /**
@@ -703,8 +825,64 @@ class MainService : AccessibilityService() {
         whatsAppScanHandler.removeCallbacks(whatsAppScanRunnable)
         whatsAppScanHandler.removeCallbacks(whatsAppRetryRunnable)
         whatsAppEmptyRetryCount = 0
+        clearWhatsAppLabels()
+    }
+
+    private fun clearWhatsAppLabels() {
+        whatsAppAllLabels = emptyList()
         whatsAppOverlayHasLabels = false
+        whatsAppScanHandler.removeCallbacks(whatsAppCoverRunnable)
         if (::whatsAppOverlay.isInitialized) whatsAppOverlay.clear()
+    }
+
+    /**
+     * Draws the labels from the last scan except those that another window covers. Android reports
+     * every touchable window with its z-order (layer), so any window above WhatsApp's is on top of
+     * it: an app overlay, a chat bubble, a heads-up banner, the keyboard, our own pause popup. A
+     * label whose centre lies inside such a window is hidden, the rest stay. Our own label window is
+     * never in the list because it does not take touches.
+     */
+    private fun applyWindowCovers() {
+        if (!isWhatsAppForegrounded || isWhatsAppObscuredBySystemUi) return
+        val all = whatsAppAllLabels
+        if (all.isEmpty()) return
+        val covers = windowsAboveScannedWindow()
+        val visible = when {
+            covers == null -> emptyList() // WhatsApp's window is not reported: fully covered
+            covers.isEmpty() -> all
+            else -> all.filter { label ->
+                val x = label.bounds.centerX()
+                val y = label.bounds.centerY()
+                covers.none { it.contains(x, y) }
+            }
+        }
+        val summary = "covers=${covers?.size ?: "all"} hidden=${all.size - visible.size}/${all.size}"
+        if (summary != whatsAppCoverSummary) {
+            whatsAppCoverSummary = summary
+            Log.d(TAG, "wa labels: $summary")
+        }
+        if (visible.isEmpty()) whatsAppOverlay.clear() else whatsAppOverlay.setLabels(visible)
+    }
+
+    /**
+     * Screen bounds of every window drawn above the window the last scan read. Empty when nothing is
+     * above it or the window list is unavailable (then nothing is hidden, as before); null when that
+     * window is no longer reported, which Android does when something covers it completely.
+     */
+    private fun windowsAboveScannedWindow(): List<Rect>? {
+        val baseId = whatsAppScanner.lastWindowId
+        if (baseId < 0) return emptyList()
+        val list = try {
+            windows
+        } catch (_: Throwable) {
+            return emptyList()
+        }
+        if (list.isEmpty()) return emptyList()
+        val base = list.firstOrNull { it.id == baseId } ?: return null
+        return list
+            .filter { it.id != baseId && it.layer > base.layer }
+            .map { window -> Rect().also { window.getBoundsInScreen(it) } }
+            .filter { !it.isEmpty }
     }
 
     /**
@@ -721,8 +899,18 @@ class MainService : AccessibilityService() {
         if (rootPkg == WHATSAPP_PKG && !isWhatsAppForegrounded) {
             // Missed transition recovery — updateWhatsAppActiveState reschedules the heartbeat
             // itself on the inactive→active edge, so return to avoid double-posting.
+            whatsAppAwaitingReturn = false
             updateWhatsAppActiveState(WHATSAPP_PKG)
             return
+        }
+        // Still waiting for System UI to get out of the way: keep ticking only while the thing in
+        // front is System UI (or our own popup, or nothing identifiable yet), and only for so long.
+        val stillWaiting = whatsAppAwaitingReturn &&
+            --whatsAppAwaitTicksLeft > 0 &&
+            (rootPkg == null || rootPkg == "com.android.systemui" || rootPkg == packageName)
+        if (!stillWaiting && whatsAppAwaitingReturn) {
+            whatsAppAwaitingReturn = false
+            updateEventSubscription()
         }
         whatsAppHeartbeatTick++
         // Every scan costs a screenshot. Content changes and scrolls already schedule their own
@@ -734,7 +922,7 @@ class MainService : AccessibilityService() {
             scheduleWhatsAppScan()
         }
         healGrayscaleIfDrifted()
-        if (isWhatsAppForegrounded || rootPkg == WHATSAPP_PKG) {
+        if (isWhatsAppForegrounded || rootPkg == WHATSAPP_PKG || stillWaiting) {
             whatsAppScanHandler.postDelayed(whatsAppHeartbeatRunnable, WHATSAPP_HEARTBEAT_INTERVAL_MS)
         }
     }
@@ -853,8 +1041,7 @@ class MainService : AccessibilityService() {
         whatsAppScanner.scan(debugDump) { labels ->
             if (!isWhatsAppForegrounded) return@scan
             if (labels.isEmpty()) {
-                whatsAppOverlay.clear()
-                whatsAppOverlayHasLabels = false
+                clearWhatsAppLabels()
                 // Empty result is often a race against WhatsApp's tree settling — particularly
                 // chat → all-chats, where content-changed events stop before the bottom-nav tabs
                 // appear in the tree. Allow up to [retryCap] retries spaced by [retry] ms.
@@ -870,8 +1057,9 @@ class MainService : AccessibilityService() {
             } else {
                 whatsAppEmptyRetryCount = 0
                 whatsAppScanHandler.removeCallbacks(whatsAppRetryRunnable)
-                whatsAppOverlay.setLabels(labels)
+                whatsAppAllLabels = labels
                 whatsAppOverlayHasLabels = true
+                applyWindowCovers()
             }
         }
     }
@@ -971,9 +1159,7 @@ class MainService : AccessibilityService() {
         val decision = if (activeSchedule?.webShortcutProfileEnabled == true) {
             ScheduleProfiles.shouldGrayScaleForScheduleWebShortcut(activeSchedule, url)
         } else {
-            val webStore = WebShortcutStore(this)
-            webStore.load()
-            webStore.shouldGrayScale(url)
+            GrayscaleStateManager.webShortcutStore(this).shouldGrayScale(url)
         }
         when (decision) {
             true -> GrayscaleStateManager.applyToSystem(this, GrayscaleStateManager.Decision.ENABLE, "web_shortcut:rule_enable")
@@ -1180,6 +1366,12 @@ class MainService : AccessibilityService() {
         // See [runWhatsAppHeartbeat] for the two failure modes this catches.
         private const val WHATSAPP_HEARTBEAT_INTERVAL_MS = 1000L
         private const val WHATSAPP_HEARTBEAT_IDLE_SCAN_EVERY = 5
+        private const val WHATSAPP_AWAIT_RETURN_TICKS = 60
+        private const val WHATSAPP_COVER_COALESCE_MS = 32L
+        private const val BASE_EVENT_TYPES = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED or
+            AccessibilityEvent.TYPE_VIEW_FOCUSED
+        private const val PAUSE_END_SLACK_MS = 250L
         private const val WHATSAPP_MIN_CAPTURE_INTERVAL_MS = 1000L
         private const val WHATSAPP_HEAL_MIN_INTERVAL_MS = 3000L
         private const val STALE_RECHECK_DELAY_MS = 300L

@@ -426,8 +426,11 @@ class PauseCountdownOverlayManager(
         private val clipPath = Path()
 
         fun setDisplayMs(ms: Long) {
-            displayMs = ms.coerceAtLeast(0L)
-            invalidate()
+            val next = ms.coerceAtLeast(0L)
+            // Ticks run twice a second but the pill shows whole seconds: redraw only when it changes.
+            val changed = remainingMsToDisplaySeconds(next) != remainingMsToDisplaySeconds(displayMs)
+            displayMs = next
+            if (changed) invalidate()
         }
 
         fun setSnappedLeft(left: Boolean) {

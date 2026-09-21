@@ -98,6 +98,7 @@ private enum class PauseOverlayExitAction {
 @Composable
 fun PauseOverlayContent(
     presentationKey: Any = Unit,
+    active: Boolean = true,
     onDismiss: () -> Unit,
     onOpenApp: () -> Unit
 ) {
@@ -138,7 +139,11 @@ fun PauseOverlayContent(
             }
         }
 
-        LaunchedEffect(Unit) {
+        // Countdown clock. Only runs while the popup is on screen: the persistent host keeps this
+        // composition alive while hidden, and a ticking clock nobody sees is wasted work.
+        LaunchedEffect(active) {
+            if (!active) return@LaunchedEffect
+            now = System.currentTimeMillis()
             while (true) {
                 delay(1000L)
                 now = System.currentTimeMillis()

@@ -107,6 +107,7 @@ class WhatsAppReadIndicatorOverlayManager(
         private val chipRect = RectF()
 
         fun setLabels(next: List<WhatsAppReadIndicatorScanner.Label>) {
+            if (next.isEmpty() && labels.isEmpty()) return
             labels = next
             invalidate()
         }
