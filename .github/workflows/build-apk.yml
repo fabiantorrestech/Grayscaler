@@ -7,11 +7,10 @@ name: Build debug APK
 #   - Rolling prerelease "ci-latest" on the Releases page: a direct .apk link, best on a phone.
 #   - The run's "Artifacts" section: the same APK inside a zip (requires being signed in).
 #
-# Signing: by default each run signs with a throwaway debug key, so a CI build will NOT install
-# over a build signed with a different key (uninstall first, or export a backup in the app).
-# To make every CI build installable over builds from your PC, add one repository secret:
-#   DEBUG_KEYSTORE_BASE64 = base64 of your PC's %USERPROFILE%\.android\debug.keystore
-# The workflow drops it where the Android Gradle Plugin looks for the debug key by default.
+# Signing: debug and release builds use the personal release key from the PERSONAL_KEYSTORE_*
+# secrets (see fabiantorrestech/android-apps), so this test build, PC builds and the released app
+# install over each other. Without those secrets the build falls back to a throwaway debug key
+# (or DEBUG_KEYSTORE_BASE64, if set).
 
 on:
   push:
