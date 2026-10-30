@@ -31,7 +31,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # Full history: versionCode is the commit count.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Gradle 8.x in this project cannot run on JDK 25+, so pin the build JDK.
       - uses: actions/setup-java@v4
@@ -52,6 +55,24 @@ jobs:
           else
             echo "No DEBUG_KEYSTORE_BASE64 secret: signing with a throwaway debug key."
           fi
+
+      # The personal release key (see fabiantorrestech/android-apps), as Gradle properties.
+      - name: Set up the release key
+        env:
+          KEYSTORE_B64: ${{ secrets.PERSONAL_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.PERSONAL_KEYSTORE_PASSWORD }}
+          KEYSTORE_ALIAS: ${{ secrets.PERSONAL_KEYSTORE_ALIAS }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::warning::PERSONAL_KEYSTORE_B64 not set: no signed release build"
+            exit 0
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          {
+            echo "ORG_GRADLE_PROJECT_PERSONAL_KEYSTORE_FILE=$RUNNER_TEMP/release.jks"
+            echo "ORG_GRADLE_PROJECT_PERSONAL_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "ORG_GRADLE_PROJECT_PERSONAL_KEYSTORE_ALIAS=$KEYSTORE_ALIAS"
+          } >> "$GITHUB_ENV"
 
       - name: Build debug APK
         run: |
@@ -90,3 +111,32 @@ jobs:
             --prerelease \
             --title "Test build (${GITHUB_REF_NAME} ${{ steps.apk.outputs.short_sha }})" \
             --notes "$notes"
+
+      # Signed release for the app hub, on pushes to master only.
+      - name: Publish to the app hub (fabiantorrestech/android-apps)
+        if: github.event_name == 'push' && github.ref_name == 'master'
+        env:
+          GH_TOKEN: ${{ secrets.APP_HUB_TOKEN }}
+          HUB: fabiantorrestech/android-apps
+          TAG: grayscalerplus
+          NAME: GrayScaler+
+          APK: GrayScalerPlus.apk
+        run: |
+          if [ -z "$ORG_GRADLE_PROJECT_PERSONAL_KEYSTORE_FILE" ] || [ -z "$GH_TOKEN" ]; then
+            echo "::warning::Release key or APP_HUB_TOKEN missing: not publishing to the hub"
+            exit 0
+          fi
+          ./gradlew :app:assembleRelease --console=plain
+          cp app/build/outputs/apk/release/*.apk "$APK"
+          aapt2="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/aapt2"
+          badging="$("$aapt2" dump badging "$APK" | head -1)"
+          code="$(echo "$badging" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p")"
+          version="$(echo "$badging" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
+          title="$NAME $version ($code)"
+          notes="Built by CI from ${GITHUB_REPOSITORY}@${GITHUB_SHA::7} (${GITHUB_REF_NAME}) on $(date -u '+%Y-%m-%d %H:%M') UTC."
+          if gh release view "$TAG" --repo "$HUB" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --repo "$HUB" --clobber
+            gh release edit "$TAG" --repo "$HUB" --title "$title" --notes "$notes"
+          else
+            gh release create "$TAG" "$APK" --repo "$HUB" --target main --title "$title" --notes "$notes" --latest=false
+          fi
