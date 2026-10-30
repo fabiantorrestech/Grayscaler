@@ -38,6 +38,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Same key as release builds (when it's set), so the CI test build (ci-latest), PC
+            // builds and the released app all install over each other.
+            signingConfigs.findByName("release")?.let { signingConfig = it }
+        }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
