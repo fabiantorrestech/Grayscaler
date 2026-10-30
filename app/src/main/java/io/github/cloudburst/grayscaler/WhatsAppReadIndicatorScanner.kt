@@ -72,7 +72,9 @@ class WhatsAppReadIndicatorScanner(
     }
 
     fun scan(debugDumpDescriptions: Boolean, callback: ResultCallback) {
-        val root = service.rootInActiveWindow
+        PerfStats.inc(PerfStats.Counter.SCAN_RUN)
+        PerfStats.inc(PerfStats.Counter.ROOT_LOOKUP)
+        val root = PerfStats.time(PerfStats.Section.ROOT_LOOKUP) { service.rootInActiveWindow }
         if (root == null) {
             if (debugDumpDescriptions) writeChatListSummary("scan: no rootInActiveWindow")
             callback.onResult(emptyList())
@@ -88,7 +90,9 @@ class WhatsAppReadIndicatorScanner(
         val tabHits = mutableSetOf<String>()
         val convoDebugLines = if (debugDumpDescriptions) mutableListOf<String>() else null
         try {
-            collectCandidates(root, candidates, containers, timestampAnchors, conversationTimestamps, tabHits, depth = 0, debugDumpDescriptions, convoDebugLines, covers = emptyList())
+            PerfStats.time(PerfStats.Section.TREE_WALK) {
+                collectCandidates(root, candidates, containers, timestampAnchors, conversationTimestamps, tabHits, depth = 0, debugDumpDescriptions, convoDebugLines, covers = emptyList())
+            }
         } finally {
             root.recycle()
         }
@@ -131,6 +135,7 @@ class WhatsAppReadIndicatorScanner(
         if (reusable != null && signature == lastSignature &&
             System.currentTimeMillis() - lastScanAtMs < LAST_SCAN_MAX_AGE_MS
         ) {
+            PerfStats.inc(PerfStats.Counter.SCAN_REUSED)
             callback.onResult(reusable)
             return
         }
@@ -160,6 +165,7 @@ class WhatsAppReadIndicatorScanner(
         covers: List<Cover>,
     ) {
         if (depth > MAX_TREE_DEPTH) return
+        PerfStats.inc(PerfStats.Counter.TREE_NODES)
         // Capture any node whose whole text/desc is a clock time, for conversation-view pairing.
         collectConversationTimestamp(node, conversationTimestamps)
         // Diagnostic: with debug dumping on, record every node that carries text or a
@@ -439,6 +445,8 @@ class WhatsAppReadIndicatorScanner(
         callback: ResultCallback,
     ) {
         lastCaptureAtMs = System.currentTimeMillis()
+        PerfStats.inc(PerfStats.Counter.SCREENSHOT)
+        val requestedAtNs = android.os.SystemClock.elapsedRealtimeNanos()
         GrayscaleLog.log(service, "wa_screenshot", "request candidates=${candidates.size} chatList=$isChatListView")
         try {
             service.takeScreenshot(
@@ -446,10 +454,12 @@ class WhatsAppReadIndicatorScanner(
                 service.mainExecutor,
                 object : TakeScreenshotCallback {
                     override fun onSuccess(screenshot: ScreenshotResult) {
+                        PerfStats.record(PerfStats.Section.SCREENSHOT, android.os.SystemClock.elapsedRealtimeNanos() - requestedAtNs)
                         val hb = screenshot.hardwareBuffer
                         try {
                             val hw = Bitmap.wrapHardwareBuffer(hb, screenshot.colorSpace)
-                            val sw = hw?.copy(Bitmap.Config.ARGB_8888, false)
+                            val sw = PerfStats.time(PerfStats.Section.BITMAP_COPY) { hw?.copy(Bitmap.Config.ARGB_8888, false) }
+                            if (sw != null) PerfStats.inc(PerfStats.Counter.COPY_BYTES_KB, sw.byteCount / 1024L)
                             if (sw == null) {
                                 if (debug) writeChatListSummary("screenshot bitmap copy failed")
                                 GrayscaleLog.log(service, "wa_screenshot", "bitmap copy failed")
@@ -457,6 +467,7 @@ class WhatsAppReadIndicatorScanner(
                                 return
                             }
                             GrayscaleLog.log(service, "wa_screenshot", "ok")
+                            val classifyStartNs = android.os.SystemClock.elapsedRealtimeNanos()
                             val labels = mutableListOf<Label>()
                             for (c in candidates) {
                                 var label = classifyByPixels(sw, c, convoDebugLines) ?: continue
@@ -477,6 +488,7 @@ class WhatsAppReadIndicatorScanner(
                                 labels += scanChatListPreviews(sw, timestampAnchors, debug)
                             }
                             sw.recycle()
+                            PerfStats.record(PerfStats.Section.CLASSIFY, android.os.SystemClock.elapsedRealtimeNanos() - classifyStartNs)
                             if (debug && !isChatListView && convoDebugLines != null) {
                                 val header = "scan: ${candidates.size} accepted candidates, view=conversation, labels=${labels.size}"
                                 writeConvoSummary("$header\n" + convoDebugLines.joinToString("\n"))
@@ -491,6 +503,7 @@ class WhatsAppReadIndicatorScanner(
                     }
 
                     override fun onFailure(errorCode: Int) {
+                        PerfStats.inc(PerfStats.Counter.SCREENSHOT_FAILED)
                         Log.d(TAG, "takeScreenshot failed code=$errorCode — using contentDescription fallback")
                         if (debug) writeChatListSummary("takeScreenshot failed code=$errorCode")
                         GrayscaleLog.log(service, "wa_screenshot", "failed code=$errorCode")
@@ -593,6 +606,7 @@ class WhatsAppReadIndicatorScanner(
     }
 
     private fun writeChatListSummary(summary: String) {
+        PerfStats.inc(PerfStats.Counter.PREFS_WRITE_DEBUG)
         val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
         try {
             service.getSharedPreferences("grayscaler_prefs", android.content.Context.MODE_PRIVATE)
@@ -604,6 +618,7 @@ class WhatsAppReadIndicatorScanner(
     }
 
     private fun writeConvoSummary(summary: String) {
+        PerfStats.inc(PerfStats.Counter.PREFS_WRITE_DEBUG)
         val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
         try {
             service.getSharedPreferences("grayscaler_prefs", android.content.Context.MODE_PRIVATE)

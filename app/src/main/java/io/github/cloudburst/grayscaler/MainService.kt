@@ -431,6 +431,27 @@ class MainService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        countEvent(event)
+        PerfStats.time(PerfStats.Section.EVENT) { handleAccessibilityEvent(event) }
+    }
+
+    private fun countEvent(event: AccessibilityEvent?) {
+        val type = event?.eventType ?: return
+        val fromWhatsApp = event.packageName?.toString() == WHATSAPP_PKG
+        val counter = when (type) {
+            TYPE_WINDOW_STATE_CHANGED -> PerfStats.Counter.EVENT_WINDOW_STATE
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> PerfStats.Counter.EVENT_WINDOWS_CHANGED
+            AccessibilityEvent.TYPE_VIEW_FOCUSED -> PerfStats.Counter.EVENT_VIEW_FOCUSED
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ->
+                if (fromWhatsApp) PerfStats.Counter.EVENT_CONTENT_WHATSAPP else PerfStats.Counter.EVENT_CONTENT_OTHER
+            AccessibilityEvent.TYPE_VIEW_SCROLLED ->
+                if (fromWhatsApp) PerfStats.Counter.EVENT_SCROLL_WHATSAPP else PerfStats.Counter.EVENT_SCROLL_OTHER
+            else -> return
+        }
+        PerfStats.inc(counter)
+    }
+
+    private fun handleAccessibilityEvent(event: AccessibilityEvent?) {
         // Suppress the WhatsApp read-indicator overlay while SystemUI (notification shade, quick
         // settings, lockscreen) is on top of WhatsApp — and bring it back the moment the
         // obstruction clears. Runs on every event so we catch TYPE_WINDOWS_CHANGED that fires
@@ -681,6 +702,11 @@ class MainService : AccessibilityService() {
     }
 
     private fun handleForegroundApp(pkg: String, className: String) {
+        PerfStats.inc(PerfStats.Counter.FOREGROUND_EVAL)
+        PerfStats.time(PerfStats.Section.FOREGROUND_EVAL) { evaluateForegroundApp(pkg, className) }
+    }
+
+    private fun evaluateForegroundApp(pkg: String, className: String) {
         checkSessionPauseState(pkg)
         val decision = GrayscaleStateManager.evaluate(pkg, className, this)
         GrayscaleStateManager.applyToSystem(this, decision, "foreground:$pkg")
@@ -779,15 +805,7 @@ class MainService : AccessibilityService() {
      * they hit pause; reappears when they resume) without waiting for the next window event.
      */
     private fun reevaluateWhatsAppActiveState() {
-        val rootPkg = try {
-            rootInActiveWindow?.let {
-                val pkg = it.packageName?.toString()
-                it.recycle()
-                pkg
-            }
-        } catch (_: Throwable) {
-            null
-        } ?: return
+        val rootPkg = activeRootPackage() ?: return
         updateWhatsAppActiveState(rootPkg)
     }
 
@@ -899,6 +917,7 @@ class MainService : AccessibilityService() {
      * Reposts itself only while WhatsApp is on screen; idles to zero otherwise.
      */
     private fun runWhatsAppHeartbeat() {
+        PerfStats.inc(PerfStats.Counter.HEARTBEAT_TICK)
         val rootPkg = activeRootPackage()
         if (rootPkg == WHATSAPP_PKG && !isWhatsAppForegrounded) {
             // Missed transition recovery — updateWhatsAppActiveState reschedules the heartbeat
@@ -955,14 +974,17 @@ class MainService : AccessibilityService() {
      * on stock Android and frequently null on Nothing OS / OneUI / MIUI for the shade window.
      */
     private fun activeRootPackage(): String? {
-        return try {
-            rootInActiveWindow?.let {
-                val pkg = it.packageName?.toString()
-                it.recycle()
-                pkg
+        PerfStats.inc(PerfStats.Counter.ROOT_LOOKUP)
+        return PerfStats.time(PerfStats.Section.ROOT_LOOKUP) {
+            try {
+                rootInActiveWindow?.let {
+                    val pkg = it.packageName?.toString()
+                    it.recycle()
+                    pkg
+                }
+            } catch (_: Throwable) {
+                null
             }
-        } catch (_: Throwable) {
-            null
         }
     }
 
@@ -1005,6 +1027,7 @@ class MainService : AccessibilityService() {
     }
 
     private fun writeShadeDebug(reason: String) {
+        PerfStats.inc(PerfStats.Counter.PREFS_WRITE_DEBUG)
         try {
             val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
             getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
@@ -1046,6 +1069,7 @@ class MainService : AccessibilityService() {
         whatsAppScanner.scan(debugDump) { labels ->
             if (!isWhatsAppForegrounded) return@scan
             if (labels.isEmpty()) {
+                PerfStats.inc(PerfStats.Counter.SCAN_EMPTY)
                 clearWhatsAppLabels()
                 // Empty result is often a race against WhatsApp's tree settling — particularly
                 // chat → all-chats, where content-changed events stop before the bottom-nav tabs
@@ -1323,6 +1347,7 @@ class MainService : AccessibilityService() {
     }
 
     private fun storeExperimentalNotificationShadeDebug(reason: String) {
+        PerfStats.inc(PerfStats.Counter.PREFS_WRITE_DEBUG)
         getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
             .edit()
             .putString(PREF_EXPERIMENTAL_NOTIFICATION_SHADE_DEBUG, reason)

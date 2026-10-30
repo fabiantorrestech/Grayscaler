@@ -109,6 +109,7 @@ class WhatsAppReadIndicatorOverlayManager(
         fun setLabels(next: List<WhatsAppReadIndicatorScanner.Label>) {
             if (next.isEmpty() && labels.isEmpty()) return
             labels = next
+            PerfStats.inc(PerfStats.Counter.LABEL_REDRAW)
             invalidate()
         }
 

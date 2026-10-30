@@ -26,6 +26,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Grayscaler"
         tools:targetApi="31">
+        <!-- Lets Perfetto record this release build's trace sections (PerfStats) and CPU samples. -->
+        <profileable
+            android:shell="true"
+            tools:targetApi="29" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

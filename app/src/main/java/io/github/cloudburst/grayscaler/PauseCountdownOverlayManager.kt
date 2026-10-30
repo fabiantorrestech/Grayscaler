@@ -45,6 +45,7 @@ class PauseCountdownOverlayManager(
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
         override fun run() {
+            PerfStats.inc(PerfStats.Counter.PILL_TICK)
             if (sessionMode) {
                 val elapsed = System.currentTimeMillis() - sessionStartMs
                 pillView?.setDisplayMs(elapsed)
@@ -430,7 +431,10 @@ class PauseCountdownOverlayManager(
             // Ticks run twice a second but the pill shows whole seconds: redraw only when it changes.
             val changed = remainingMsToDisplaySeconds(next) != remainingMsToDisplaySeconds(displayMs)
             displayMs = next
-            if (changed) invalidate()
+            if (changed) {
+                PerfStats.inc(PerfStats.Counter.PILL_REDRAW)
+                invalidate()
+            }
         }
 
         fun setSnappedLeft(left: Boolean) {

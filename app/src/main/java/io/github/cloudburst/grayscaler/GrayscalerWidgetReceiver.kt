@@ -25,6 +25,7 @@ class GrayscalerWidgetReceiver : GlanceAppWidgetReceiver() {
                     try {
                         updateAllWidgets(context)
                         if (intent.action == ACTION_WIDGET_TICK) {
+                            PerfStats.inc(PerfStats.Counter.WIDGET_TICK)
                             val pauseUntil = GrayscalerToggleCoordinator.prefs(context).getLong("pause_until", 0L)
                             if (pauseUntil > System.currentTimeMillis() && WidgetSettingsStore.isLiveCountdown(context)) {
                                 scheduleTickAlarm(context)

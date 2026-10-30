@@ -48,6 +48,8 @@ fun DeveloperSettingsScreen(onBack: () -> Unit) {
         mutableStateOf(prefs.getBoolean(GrayscaleLog.PREF_FORCE_RETOGGLE, false))
     }
     var diagRefreshTick by remember { mutableStateOf(0) }
+    var perfRefreshTick by remember { mutableStateOf(0) }
+    val perfReport = remember(perfRefreshTick) { PerfStats.report(context) }
     val grayscaleStateSnapshot = remember(diagRefreshTick) {
         // Same snapshot the global toggle logs before and after a reset, one field per line.
         GrayscaleStateManager.stateSnapshot(context).replace(' ', '\n')
@@ -133,6 +135,36 @@ fun DeveloperSettingsScreen(onBack: () -> Unit) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            Text(
+                "Performance counters",
+                style = MaterialTheme.typography.titleMedium
+            )
+            Text(
+                "Always counting, in memory only. Reset, use the phone for a while, then Refresh and Copy. Rates are per minute since the last reset; a service restart also resets them.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(perfReport, style = MaterialTheme.typography.bodySmall)
+            androidx.compose.foundation.layout.Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(onClick = { perfRefreshTick++ }) { Text("Refresh") }
+                OutlinedButton(onClick = {
+                    PerfStats.reset()
+                    perfRefreshTick++
+                }) { Text("Reset") }
+                OutlinedButton(onClick = {
+                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    clipboard.setPrimaryClip(
+                        android.content.ClipData.newPlainText("Grayscaler+ counters", PerfStats.report(context))
+                    )
+                }) { Text("Copy") }
+            }
+
+            HorizontalDivider()
+
             Text(
                 "Grayscale state diagnostics",
                 style = MaterialTheme.typography.titleMedium

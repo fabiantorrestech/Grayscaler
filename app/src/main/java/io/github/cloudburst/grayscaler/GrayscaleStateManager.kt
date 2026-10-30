@@ -552,6 +552,7 @@ object GrayscaleStateManager {
         if (pkg == lastMeaningfulPkg && className == lastMeaningfulClassName) return
         lastMeaningfulPkg = pkg
         lastMeaningfulClassName = className
+        PerfStats.inc(PerfStats.Counter.PREFS_WRITE_FOREGROUND)
         context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
             .edit()
             .putString(PREF_LAST_MEANINGFUL_PKG, pkg)
