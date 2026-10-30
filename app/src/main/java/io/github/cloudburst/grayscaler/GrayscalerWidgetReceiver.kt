@@ -60,8 +60,10 @@ class GrayscalerWidgetReceiver : GlanceAppWidgetReceiver() {
 
         fun scheduleTickAlarm(context: Context) {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            // Not a wakeup alarm: nobody sees a home-screen widget while the phone sleeps. A due
+            // alarm is delivered as soon as the phone wakes, so the widget is current by then.
             alarmManager.set(
-                AlarmManager.RTC_WAKEUP,
+                AlarmManager.RTC,
                 System.currentTimeMillis() + 60_000L,
                 buildTickPendingIntent(context)
             )

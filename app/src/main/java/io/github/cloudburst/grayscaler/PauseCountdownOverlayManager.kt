@@ -43,13 +43,17 @@ class PauseCountdownOverlayManager(
     private var overlayAnimationToken: Long = 0L
 
     private val handler = Handler(Looper.getMainLooper())
+    // True between show()/showSession() and hide(). The ticker is paused while the screen is off
+    // (see pauseTicking) without hiding the pill, so this is what resumeTicking() checks.
+    private var ticking = false
+    // Ticks land just after the shown second changes (one wakeup a second), not on a fixed period.
     private val ticker = object : Runnable {
         override fun run() {
             PerfStats.inc(PerfStats.Counter.PILL_TICK)
             if (sessionMode) {
                 val elapsed = System.currentTimeMillis() - sessionStartMs
                 pillView?.setDisplayMs(elapsed)
-                handler.postDelayed(this, TICK_INTERVAL_MS)
+                handler.postDelayed(this, msUntilElapsedSecondChanges(elapsed))
             } else {
                 val remaining = pauseUntilMs - System.currentTimeMillis()
                 if (remaining <= 0L) {
@@ -57,7 +61,7 @@ class PauseCountdownOverlayManager(
                     return
                 }
                 pillView?.setDisplayMs(remaining)
-                handler.postDelayed(this, TICK_INTERVAL_MS)
+                handler.postDelayed(this, msUntilRemainingSecondChanges(remaining))
             }
         }
     }
@@ -76,8 +80,9 @@ class PauseCountdownOverlayManager(
             startFadeIn(view, waitForNextFrame = needsAttach)
         }
         view.setDisplayMs(pauseUntilMs - System.currentTimeMillis())
+        ticking = true
         handler.removeCallbacks(ticker)
-        handler.postDelayed(ticker, TICK_INTERVAL_MS)
+        handler.postDelayed(ticker, msUntilRemainingSecondChanges(pauseUntilMs - System.currentTimeMillis()))
     }
 
     fun showSession(startMs: Long) {
@@ -94,11 +99,25 @@ class PauseCountdownOverlayManager(
             startFadeIn(view, waitForNextFrame = needsAttach)
         }
         view.setDisplayMs(System.currentTimeMillis() - startMs)
+        ticking = true
         handler.removeCallbacks(ticker)
-        handler.postDelayed(ticker, TICK_INTERVAL_MS)
+        handler.postDelayed(ticker, msUntilElapsedSecondChanges(System.currentTimeMillis() - startMs))
+    }
+
+    /** Screen off: nobody can see the pill, so stop waking up for it. The pill itself stays. */
+    fun pauseTicking() {
+        handler.removeCallbacks(ticker)
+    }
+
+    /** Screen on: show the current time straight away and continue ticking. */
+    fun resumeTicking() {
+        if (!ticking) return
+        handler.removeCallbacks(ticker)
+        ticker.run()
     }
 
     fun hide() {
+        ticking = false
         handler.removeCallbacks(ticker)
         handler.removeCallbacks(autoCollapseRunnable)
         isExpanded = false
@@ -299,6 +318,18 @@ class PauseCountdownOverlayManager(
 
     private fun hasNaturallyExpired(): Boolean =
         pauseUntilMs > 0L && pauseUntilMs <= System.currentTimeMillis()
+
+    /** The pill shows ceil(remaining / 1 s); it next changes once remaining drops past a whole second. */
+    private fun msUntilRemainingSecondChanges(remainingMs: Long): Long {
+        if (remainingMs <= 0L) return TICK_SLACK_MS
+        return (remainingMs - 1L) % 1000L + 1L + TICK_SLACK_MS
+    }
+
+    /** The session pill shows ceil(elapsed / 1 s); it next changes once elapsed passes a whole second. */
+    private fun msUntilElapsedSecondChanges(elapsedMs: Long): Long {
+        val intoSecond = Math.floorMod(elapsedMs, 1000L)
+        return (if (intoSecond == 0L) 1L else 1000L - intoSecond) + TICK_SLACK_MS
+    }
 
     private fun remainingMsToDisplaySeconds(remainingMs: Long): Long {
         if (remainingMs <= 0L) return 0L
@@ -511,7 +542,8 @@ class PauseCountdownOverlayManager(
     }
 
     companion object {
-        private const val TICK_INTERVAL_MS = 500L
+        // Lands each tick a little after the boundary, so the new second is already showing.
+        private const val TICK_SLACK_MS = 15L
         private const val AUTO_COLLAPSE_DELAY_MS = 3000L
         private const val OVERLAY_FADE_DURATION_MS = 180L
         private const val DRAG_SLOP_DP    = 12

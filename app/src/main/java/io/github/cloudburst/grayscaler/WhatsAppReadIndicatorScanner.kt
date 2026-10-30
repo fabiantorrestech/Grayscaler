@@ -166,8 +166,9 @@ class WhatsAppReadIndicatorScanner(
     ) {
         if (depth > MAX_TREE_DEPTH) return
         PerfStats.inc(PerfStats.Counter.TREE_NODES)
+        val desc = node.contentDescription?.toString()
         // Capture any node whose whole text/desc is a clock time, for conversation-view pairing.
-        collectConversationTimestamp(node, conversationTimestamps)
+        collectConversationTimestamp(node, node.text?.toString(), desc, conversationTimestamps)
         // Diagnostic: with debug dumping on, record every node that carries text or a
         // contentDescription (capped). Reveals how WhatsApp exposes voice-note / media status,
         // which is NOT a plain "Read/Delivered/Sent" ImageView like text messages are.
@@ -183,13 +184,13 @@ class WhatsAppReadIndicatorScanner(
                     "b=${r.toShortString()} cd=\"${truncForDebug(cd)}\" tx=\"${truncForDebug(tx)}\""
             }
         }
-        val desc = node.contentDescription?.toString()
+        val descKind = if (desc.isNullOrBlank()) null else classifyContentDescription(desc)
         if (!desc.isNullOrBlank()) {
             if (debugDumpDescriptions) {
                 val short = if (desc.length > 140) desc.substring(0, 140) + "…" else desc
                 Log.d(TAG, "desc: \"$short\" cls=${node.className}")
             }
-            val kind = classifyContentDescription(desc)
+            val kind = descKind
             if (kind != null) {
                 val rect = Rect()
                 node.getBoundsInScreen(rect)
@@ -236,7 +237,7 @@ class WhatsAppReadIndicatorScanner(
         // Tick nodes that carry no usable description (seen on media bubbles once
         // flagIncludeNotImportantViews exposes them): recognise them by WhatsApp's view id and let
         // the pixels decide the status.
-        if (desc.isNullOrBlank() || classifyContentDescription(desc) == null) {
+        if (descKind == null) {
             val viewId = node.viewIdResourceName
             if (viewId != null && STATUS_VIEW_ID_SUFFIXES.any { viewId.endsWith(it) }) {
                 val rect = Rect()
@@ -315,16 +316,17 @@ class WhatsAppReadIndicatorScanner(
      * entirety, a short clock time (e.g. "10:30 PM", "13:45"). The whole-string + length guard
      * keeps ordinary message bodies that merely mention a time out of the anchor set.
      */
-    private fun collectConversationTimestamp(node: AccessibilityNodeInfo, out: MutableList<TimestampNode>) {
-        for (value in listOfNotNull(node.text?.toString(), node.contentDescription?.toString())) {
-            val clock = clockTimeIfWholeString(value) ?: continue
-            val rect = Rect()
-            node.getBoundsInScreen(rect)
-            if (!rect.isEmpty) {
-                out += TimestampNode(rect, clock)
-                return
-            }
-        }
+    private fun collectConversationTimestamp(
+        node: AccessibilityNodeInfo,
+        text: String?,
+        desc: String?,
+        out: MutableList<TimestampNode>,
+    ) {
+        // Runs on every node: text first, then the description, the same order as before.
+        val clock = clockTimeIfWholeString(text) ?: clockTimeIfWholeString(desc) ?: return
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        if (!rect.isEmpty) out += TimestampNode(rect, clock)
     }
 
     /**
@@ -391,7 +393,9 @@ class WhatsAppReadIndicatorScanner(
         }
     }
 
-    private fun clockTimeIfWholeString(value: String): String? {
+    private fun clockTimeIfWholeString(value: String?): String? {
+        // Cheap rejects before trimming and the regex: almost no node text is a short clock time.
+        if (value == null || value.length > MAX_CLOCK_TEXT_LENGTH || value.indexOf(':') < 0) return null
         val trimmed = value.trim()
         if (trimmed.isEmpty() || trimmed.length > 10) return null
         return if (CLOCK_TIME_PATTERN.matches(trimmed)) trimmed else null
@@ -994,6 +998,8 @@ class WhatsAppReadIndicatorScanner(
         // identifies a timestamp node; a paired timestamp must be within these bounds of the status
         // icon (same row, just to its left).
         private val CLOCK_TIME_PATTERN = Regex("""\d{1,2}:\d{2}\s?(?:[AaPp][Mm])?""")
+        // Longest untrimmed text worth testing; a clock time with padding stays well under it.
+        private const val MAX_CLOCK_TEXT_LENGTH = 24
         private const val MAX_TIME_STATUS_GAP_DP = 72
         private const val TIME_ROW_V_TOL_DP = 14
 

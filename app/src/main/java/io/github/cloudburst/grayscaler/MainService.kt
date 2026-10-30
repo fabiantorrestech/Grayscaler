@@ -112,6 +112,10 @@ class MainService : AccessibilityService() {
     private var experimentalNotificationShadeLastConfirmAt = 0L
     private var lastWhatsAppProbeMs = 0L
 
+    // Feature switches read on every event, kept in fields and refreshed by [prefChangeListener].
+    private var whatsAppFeatureEnabled = false
+    private var experimentalShadeEnabled = false
+
     private lateinit var whatsAppScanner: WhatsAppReadIndicatorScanner
     private lateinit var whatsAppOverlay: WhatsAppReadIndicatorOverlayManager
     private val whatsAppScanHandler = Handler(Looper.getMainLooper())
@@ -169,6 +173,7 @@ class MainService : AccessibilityService() {
             val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
             when (intent.action) {
                 Intent.ACTION_SCREEN_OFF -> {
+                    countdownOverlay?.pauseTicking()
                     clearExperimentalNotificationShade("screen_off")
                     // Tear the WhatsApp read-indicator overlay down synchronously on screen-off
                     // rather than waiting for the next TYPE_WINDOW_STATE_CHANGED (which can lag by
@@ -180,6 +185,7 @@ class MainService : AccessibilityService() {
                         "screen_off"
                     )
                 }
+                Intent.ACTION_SCREEN_ON -> countdownOverlay?.resumeTicking()
                 Intent.ACTION_USER_PRESENT -> {
                     clearExperimentalNotificationShade("user_present")
                     // Unlocked: the lock screen's mode no longer applies.
@@ -240,9 +246,15 @@ class MainService : AccessibilityService() {
                 reevaluateWhatsAppActiveState()
             }
             "grayscaler_enabled",
-            "session_pause_pkg",
-            PREF_WHATSAPP_READ_INDICATOR_ENABLED -> reevaluateWhatsAppActiveState()
-            PREF_EXPERIMENTAL_NOTIFICATION_SHADE_ENABLED -> updateEventSubscription()
+            "session_pause_pkg" -> reevaluateWhatsAppActiveState()
+            PREF_WHATSAPP_READ_INDICATOR_ENABLED -> {
+                whatsAppFeatureEnabled = prefs.getBoolean(key, false)
+                reevaluateWhatsAppActiveState()
+            }
+            PREF_EXPERIMENTAL_NOTIFICATION_SHADE_ENABLED -> {
+                experimentalShadeEnabled = prefs.getBoolean(key, false)
+                updateEventSubscription()
+            }
         }
     }
 
@@ -255,6 +267,7 @@ class MainService : AccessibilityService() {
 
         registerReceiver(screenReceiver, IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_USER_PRESENT)
         })
 
@@ -266,6 +279,8 @@ class MainService : AccessibilityService() {
         }
 
         val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+        whatsAppFeatureEnabled = prefs.getBoolean(PREF_WHATSAPP_READ_INDICATOR_ENABLED, false)
+        experimentalShadeEnabled = prefs.getBoolean(PREF_EXPERIMENTAL_NOTIFICATION_SHADE_ENABLED, false)
         prefs.registerOnSharedPreferenceChangeListener(prefChangeListener)
 
         // Both keys: with seamless switching the enabled flag stays on and the mode key carries the
@@ -452,14 +467,20 @@ class MainService : AccessibilityService() {
     }
 
     private fun handleAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null || isUnneededContentEvent(event)) return
         // Suppress the WhatsApp read-indicator overlay while SystemUI (notification shade, quick
         // settings, lockscreen) is on top of WhatsApp — and bring it back the moment the
-        // obstruction clears. Runs on every event so we catch TYPE_WINDOWS_CHANGED that fires
-        // when the shade is dragged down (which would otherwise fall through).
-        // Both per-event checks below need the active window's package. Resolve it at most once per
-        // event, and only if one of them will actually use it.
+        // obstruction clears. TYPE_WINDOWS_CHANGED fires when the shade is dragged down.
+        // Both per-event checks below need the active window's package, a binder call. Which app is
+        // in front only changes with a window event, so resolve it for those (at most once per
+        // event). Two short-lived states keep the old every-event lookup because they are waiting
+        // for a return: System UI suppression, and WhatsApp covered by System UI.
+        val isWindowEvent = event.eventType == TYPE_WINDOW_STATE_CHANGED ||
+            event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED
         val activeRootPkg: String? =
-            if (isWhatsAppForegrounded || suppressedBySystemUi) activeRootPackage() else null
+            if ((isWhatsAppForegrounded || suppressedBySystemUi) &&
+                (isWindowEvent || suppressedBySystemUi || isWhatsAppObscuredBySystemUi)
+            ) activeRootPackage() else null
         checkWhatsAppObscuredTransition(activeRootPkg)
 
         // Another window appeared, moved or went away while labels are up: re-check which labels it
@@ -497,12 +518,9 @@ class MainService : AccessibilityService() {
         if (event?.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED) {
             val eventPkg = event.packageName?.toString()
             if (eventPkg == WHATSAPP_PKG && isWhatsAppForegrounded
-                && !isWhatsAppObscuredBySystemUi
+                && !isWhatsAppObscuredBySystemUi && whatsAppFeatureEnabled
             ) {
-                val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
-                if (prefs.getBoolean(PREF_WHATSAPP_READ_INDICATOR_ENABLED, false)) {
-                    scheduleWhatsAppScan()
-                }
+                scheduleWhatsAppScan()
             }
             return
         }
@@ -512,9 +530,7 @@ class MainService : AccessibilityService() {
             val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
             if (handleExperimentalNotificationShadeEvent(event, prefs)) return
             val eventPkg = event.packageName?.toString()
-            if (eventPkg == WHATSAPP_PKG
-                && prefs.getBoolean(PREF_WHATSAPP_READ_INDICATOR_ENABLED, false)
-            ) {
+            if (eventPkg == WHATSAPP_PKG && whatsAppFeatureEnabled) {
                 // Unit 2B — content-change self-heal: if we missed WhatsApp's WINDOW_STATE_CHANGED
                 // on re-entry (root-window guard discarded it as "stale"), the foregrounded flag is
                 // stuck false and no scan will ever fire. Use this content-change as proof of life
@@ -639,6 +655,23 @@ class MainService : AccessibilityService() {
         handleForegroundApp(pkg, className)
     }
 
+    /**
+     * Content-change and scroll events arrive from every app while any feature has them subscribed
+     * (see [updateEventSubscription]), but only these sources are used: WhatsApp (labels), the
+     * browser in front (URL rules) and, with shade detection on, every app (it watches for focus
+     * returning to any app). The rest are dropped before any work is done.
+     */
+    private fun isUnneededContentEvent(event: AccessibilityEvent): Boolean {
+        val type = event.eventType
+        if (type != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
+            type != AccessibilityEvent.TYPE_VIEW_SCROLLED
+        ) return false
+        if (type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED && experimentalShadeEnabled) return false
+        val pkg = event.packageName?.toString() ?: return true
+        if (pkg == WHATSAPP_PKG) return !whatsAppFeatureEnabled
+        return type == AccessibilityEvent.TYPE_VIEW_SCROLLED || pkg != currentBrowserPkg
+    }
+
     private fun enterSystemUiSurface() {
         cancelStaleRecheck()
         exitWhatsAppActiveState(keepWatching = true)
@@ -739,9 +772,8 @@ class MainService : AccessibilityService() {
      */
     private fun updateEventSubscription() {
         val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
-        val whatsApp = prefs.getBoolean(PREF_WHATSAPP_READ_INDICATOR_ENABLED, false) &&
-            (isWhatsAppForegrounded || whatsAppAwaitingReturn)
-        val shade = prefs.getBoolean(PREF_EXPERIMENTAL_NOTIFICATION_SHADE_ENABLED, false)
+        val whatsApp = whatsAppFeatureEnabled && (isWhatsAppForegrounded || whatsAppAwaitingReturn)
+        val shade = experimentalShadeEnabled
         var mask = BASE_EVENT_TYPES
         if (whatsApp || shade || currentBrowserPkg != null) {
             mask = mask or AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
@@ -1247,8 +1279,8 @@ class MainService : AccessibilityService() {
         prefs: android.content.SharedPreferences
     ): Boolean {
         if (event == null) return false
-        if (!prefs.getBoolean(PREF_EXPERIMENTAL_NOTIFICATION_SHADE_ENABLED, false)) {
-            clearExperimentalNotificationShade("disabled")
+        if (!experimentalShadeEnabled) {
+            if (experimentalNotificationShadeActive) clearExperimentalNotificationShade("disabled")
             return false
         }
 
