@@ -115,6 +115,9 @@ class MainService : AccessibilityService() {
     // Feature switches read on every event, kept in fields and refreshed by [prefChangeListener].
     private var whatsAppFeatureEnabled = false
     private var experimentalShadeEnabled = false
+    // Experiment: keep WhatsApp labels up while a rescan runs instead of wiping them on every content
+    // change. Needs Android 14's window-only screenshot, so the labels are not in the captured pixels.
+    private var keepLabelsDuringRescan = false
 
     private lateinit var whatsAppScanner: WhatsAppReadIndicatorScanner
     private lateinit var whatsAppOverlay: WhatsAppReadIndicatorOverlayManager
@@ -255,6 +258,7 @@ class MainService : AccessibilityService() {
                 experimentalShadeEnabled = prefs.getBoolean(key, false)
                 updateEventSubscription()
             }
+            WhatsAppReadIndicatorScanner.PREF_PERF_KEEP_LABELS -> keepLabelsDuringRescan = readKeepLabels(prefs)
         }
     }
 
@@ -281,6 +285,7 @@ class MainService : AccessibilityService() {
         val prefs = getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
         whatsAppFeatureEnabled = prefs.getBoolean(PREF_WHATSAPP_READ_INDICATOR_ENABLED, false)
         experimentalShadeEnabled = prefs.getBoolean(PREF_EXPERIMENTAL_NOTIFICATION_SHADE_ENABLED, false)
+        keepLabelsDuringRescan = readKeepLabels(prefs)
         prefs.registerOnSharedPreferenceChangeListener(prefChangeListener)
 
         // Both keys: with seamless switching the enabled flag stays on and the mode key carries the
@@ -520,6 +525,8 @@ class MainService : AccessibilityService() {
             if (eventPkg == WHATSAPP_PKG && isWhatsAppForegrounded
                 && !isWhatsAppObscuredBySystemUi && whatsAppFeatureEnabled
             ) {
+                // Rows moved: labels on the old positions would be wrong, so they go now.
+                if (keepLabelsDuringRescan) clearWhatsAppLabels()
                 scheduleWhatsAppScan()
             }
             return
@@ -546,8 +553,10 @@ class MainService : AccessibilityService() {
                         (types and AccessibilityEvent.CONTENT_CHANGE_TYPE_TEXT) != 0 &&
                         (types and AccessibilityEvent.CONTENT_CHANGE_TYPE_TEXT.inv()) == 0
                     if (onlyTextChange && whatsAppOverlayHasLabels) return
-                    // Content moved — wipe stale labels and re-scan once events settle.
-                    clearWhatsAppLabels()
+                    // Content moved — wipe stale labels and re-scan once events settle. With the
+                    // keep-labels experiment they stay until the rescan replaces them (scrolls
+                    // still clear them above), so an unchanged screen is not redrawn at all.
+                    if (!keepLabelsDuringRescan) clearWhatsAppLabels()
                     scheduleWhatsAppScan()
                     return
                 }
@@ -671,6 +680,10 @@ class MainService : AccessibilityService() {
         if (pkg == WHATSAPP_PKG) return !whatsAppFeatureEnabled
         return type == AccessibilityEvent.TYPE_VIEW_SCROLLED || pkg != currentBrowserPkg
     }
+
+    private fun readKeepLabels(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(WhatsAppReadIndicatorScanner.PREF_PERF_KEEP_LABELS, false) &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
 
     private fun enterSystemUiSurface() {
         cancelStaleRecheck()

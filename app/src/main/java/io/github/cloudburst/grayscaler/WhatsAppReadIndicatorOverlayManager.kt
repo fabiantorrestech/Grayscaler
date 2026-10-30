@@ -107,7 +107,8 @@ class WhatsAppReadIndicatorOverlayManager(
         private val chipRect = RectF()
 
         fun setLabels(next: List<WhatsAppReadIndicatorScanner.Label>) {
-            if (next.isEmpty() && labels.isEmpty()) return
+            // Same labels as on screen (e.g. a rescan of an unchanged chat): nothing to redraw.
+            if (next == labels) return
             labels = next
             PerfStats.inc(PerfStats.Counter.LABEL_REDRAW)
             invalidate()

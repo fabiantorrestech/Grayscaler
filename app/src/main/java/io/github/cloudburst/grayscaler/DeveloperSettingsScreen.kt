@@ -50,6 +50,15 @@ fun DeveloperSettingsScreen(onBack: () -> Unit) {
     var diagRefreshTick by remember { mutableStateOf(0) }
     var perfRefreshTick by remember { mutableStateOf(0) }
     val perfReport = remember(perfRefreshTick) { PerfStats.report(context) }
+    var perfGpuCrop by remember {
+        mutableStateOf(prefs.getBoolean(WhatsAppReadIndicatorScanner.PREF_PERF_GPU_CROP, false))
+    }
+    var perfTreePrefetch by remember {
+        mutableStateOf(prefs.getBoolean(WhatsAppReadIndicatorScanner.PREF_PERF_TREE_PREFETCH, false))
+    }
+    var perfKeepLabels by remember {
+        mutableStateOf(prefs.getBoolean(WhatsAppReadIndicatorScanner.PREF_PERF_KEEP_LABELS, false))
+    }
     val grayscaleStateSnapshot = remember(diagRefreshTick) {
         // Same snapshot the global toggle logs before and after a reset, one field per line.
         GrayscaleStateManager.stateSnapshot(context).replace(' ', '\n')
@@ -162,6 +171,43 @@ fun DeveloperSettingsScreen(onBack: () -> Unit) {
                     )
                 }) { Text("Copy") }
             }
+
+            Text(
+                "Performance experiments (WhatsApp labels)",
+                style = MaterialTheme.typography.titleSmall
+            )
+            Text(
+                "Each one is off by default. Turn one on, Reset the counters, use WhatsApp for a few minutes and compare. Labels must look the same as with it off.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            PerfExperimentRow(
+                title = "Crop screenshot on the GPU",
+                description = "Reads back only the strip with the ticks instead of the whole screen. Android 10+. Compare 'bitmap copy' and 'bitmap KB copied'.",
+                checked = perfGpuCrop,
+                onCheckedChange = { enabled ->
+                    perfGpuCrop = enabled
+                    prefs.edit().putBoolean(WhatsAppReadIndicatorScanner.PREF_PERF_GPU_CROP, enabled).apply()
+                }
+            )
+            PerfExperimentRow(
+                title = "Depth-first tree prefetch",
+                description = "Fetches WhatsApp's screen tree in the order it is walked. Android 13+. Compare 'WhatsApp tree walk'.",
+                checked = perfTreePrefetch,
+                onCheckedChange = { enabled ->
+                    perfTreePrefetch = enabled
+                    prefs.edit().putBoolean(WhatsAppReadIndicatorScanner.PREF_PERF_TREE_PREFETCH, enabled).apply()
+                }
+            )
+            PerfExperimentRow(
+                title = "Keep labels until the rescan",
+                description = "Labels stay up while WhatsApp changes and are replaced in one go; captures only WhatsApp's window. Android 14+. After a new message they may sit on the old rows for up to a second. Compare 'label overlay redraws'.",
+                checked = perfKeepLabels,
+                onCheckedChange = { enabled ->
+                    perfKeepLabels = enabled
+                    prefs.edit().putBoolean(WhatsAppReadIndicatorScanner.PREF_PERF_KEEP_LABELS, enabled).apply()
+                }
+            )
 
             HorizontalDivider()
 
@@ -559,5 +605,29 @@ fun DeveloperSettingsScreen(onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+@Composable
+private fun PerfExperimentRow(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    androidx.compose.foundation.layout.Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }

@@ -52,9 +52,17 @@ class WhatsAppReadIndicatorScanner(
     private var lastLabels: List<Label>? = null
     private var lastScanAtMs = 0L
 
+    // Performance experiments (Developer settings), read once per scan.
+    private var gpuCrop = false
+    private var windowCapture = false
+    private var childPrefetchFlags = 0
+    private var cropper: ScreenshotCropper? = null
+
     fun forgetLastScan() {
         lastSignature = null
         lastLabels = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) cropper?.close()
+        cropper = null
     }
 
     /** Accessibility window id of the tree the last scan read (WhatsApp's window), or -1. */
@@ -73,8 +81,15 @@ class WhatsAppReadIndicatorScanner(
 
     fun scan(debugDumpDescriptions: Boolean, callback: ResultCallback) {
         PerfStats.inc(PerfStats.Counter.SCAN_RUN)
+        readExperimentSwitches()
         PerfStats.inc(PerfStats.Counter.ROOT_LOOKUP)
-        val root = PerfStats.time(PerfStats.Section.ROOT_LOOKUP) { service.rootInActiveWindow }
+        val root = PerfStats.time(PerfStats.Section.ROOT_LOOKUP) {
+            if (childPrefetchFlags != 0 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                service.getRootInActiveWindow(childPrefetchFlags)
+            } else {
+                service.rootInActiveWindow
+            }
+        }
         if (root == null) {
             if (debugDumpDescriptions) writeChatListSummary("scan: no rootInActiveWindow")
             callback.onResult(emptyList())
@@ -150,6 +165,22 @@ class WhatsAppReadIndicatorScanner(
             return
         }
         captureAndClassify(candidates, timestampAnchors, conversationTimestamps, isChatListView, debugDumpDescriptions, convoDebugLines, signature, callback)
+    }
+
+    private fun readExperimentSwitches() {
+        val prefs = service.getSharedPreferences("grayscaler_prefs", android.content.Context.MODE_PRIVATE)
+        gpuCrop = prefs.getBoolean(PREF_PERF_GPU_CROP, false) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        windowCapture = prefs.getBoolean(PREF_PERF_KEEP_LABELS, false) &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+        childPrefetchFlags = if (prefs.getBoolean(PREF_PERF_TREE_PREFETCH, false) &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        ) {
+            // The walk is depth-first, so prefetch in the same order and let it finish uninterrupted.
+            AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_DEPTH_FIRST or
+                AccessibilityNodeInfo.FLAG_PREFETCH_UNINTERRUPTIBLE
+        } else {
+            0
+        }
     }
 
     private fun collectCandidates(
@@ -261,7 +292,14 @@ class WhatsAppReadIndicatorScanner(
         // siblings: any sibling drawn later (higher drawing order, which is NOT the child index)
         // sits on top of it and of everything beneath it.
         val children = ArrayList<AccessibilityNodeInfo>(node.childCount)
-        for (i in 0 until node.childCount) node.getChild(i)?.let { children += it }
+        for (i in 0 until node.childCount) {
+            val child = if (childPrefetchFlags != 0 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                node.getChild(i, childPrefetchFlags)
+            } else {
+                node.getChild(i)
+            }
+            child?.let { children += it }
+        }
         try {
             val drawn = children.map { child ->
                 val rect = Rect().also { child.getBoundsInScreen(it) }
@@ -451,30 +489,47 @@ class WhatsAppReadIndicatorScanner(
         lastCaptureAtMs = System.currentTimeMillis()
         PerfStats.inc(PerfStats.Counter.SCREENSHOT)
         val requestedAtNs = android.os.SystemClock.elapsedRealtimeNanos()
-        GrayscaleLog.log(service, "wa_screenshot", "request candidates=${candidates.size} chatList=$isChatListView")
+        // With the window capture experiment, only WhatsApp's window is captured. Our label
+        // overlay is a separate window, so it is never in the picture and the labels can stay up
+        // while a rescan runs. The window may not start at the screen's corner: remember its
+        // origin to map screen coordinates into the capture.
+        val windowOrigin = if (windowCapture) windowOriginOnScreen(lastWindowId) else null
+        if (windowCapture && windowOrigin == null) {
+            // A full-display screenshot would include the labels kept on screen and misread the
+            // ticks under them, so use the descriptions alone this time.
+            PerfStats.inc(PerfStats.Counter.SCREENSHOT_FAILED)
+            callback.onResult(candidates.mapNotNull { it.toFallbackLabel() })
+            return
+        }
+        GrayscaleLog.log(service, "wa_screenshot", "request candidates=${candidates.size} chatList=$isChatListView window=${windowOrigin != null}")
         try {
-            service.takeScreenshot(
-                Display.DEFAULT_DISPLAY,
-                service.mainExecutor,
+            val screenshotCallback =
                 object : TakeScreenshotCallback {
                     override fun onSuccess(screenshot: ScreenshotResult) {
                         PerfStats.record(PerfStats.Section.SCREENSHOT, android.os.SystemClock.elapsedRealtimeNanos() - requestedAtNs)
                         val hb = screenshot.hardwareBuffer
                         try {
                             val hw = Bitmap.wrapHardwareBuffer(hb, screenshot.colorSpace)
-                            val sw = PerfStats.time(PerfStats.Section.BITMAP_COPY) { hw?.copy(Bitmap.Config.ARGB_8888, false) }
-                            if (sw != null) PerfStats.inc(PerfStats.Counter.COPY_BYTES_KB, sw.byteCount / 1024L)
-                            if (sw == null) {
+                            val needed = pixelRegionsOnScreen(candidates, timestampAnchors, isChatListView)
+                            val pixels = readPixels(hw, needed, windowOrigin?.x ?: 0, windowOrigin?.y ?: 0)
+                            if (pixels == null) {
                                 if (debug) writeChatListSummary("screenshot bitmap copy failed")
                                 GrayscaleLog.log(service, "wa_screenshot", "bitmap copy failed")
                                 callback.onResult(candidates.mapNotNull { it.toFallbackLabel() })
                                 return
                             }
+                            val sw = pixels.bitmap
                             GrayscaleLog.log(service, "wa_screenshot", "ok")
                             val classifyStartNs = android.os.SystemClock.elapsedRealtimeNanos()
                             val labels = mutableListOf<Label>()
+                            // The pixels may start anywhere on screen (window capture, GPU strip):
+                            // classify in their coordinates, report labels in screen coordinates.
+                            val dx = pixels.screenX
+                            val dy = pixels.screenY
                             for (c in candidates) {
-                                var label = classifyByPixels(sw, c, convoDebugLines) ?: continue
+                                val local = if (dx == 0 && dy == 0) c else c.copy(bounds = Rect(c.bounds).apply { offset(-dx, -dy) })
+                                var label = classifyByPixels(sw, local, convoDebugLines) ?: continue
+                                if (dx != 0 || dy != 0) label = label.copy(bounds = Rect(label.bounds).apply { offset(dx, dy) })
                                 if (!isChatListView) {
                                     val time = pairConversationTimestamp(c.bounds, conversationTimestamps)
                                     label = label.copy(timestamp = time)
@@ -489,7 +544,7 @@ class WhatsAppReadIndicatorScanner(
                             // status nodes — i.e. we're on the chat list, where WhatsApp omits
                             // status from the accessibility tree entirely.
                             if (isChatListView && candidates.isEmpty()) {
-                                labels += scanChatListPreviews(sw, timestampAnchors, debug)
+                                labels += scanChatListPreviews(sw, timestampAnchors, debug, dx, dy)
                             }
                             sw.recycle()
                             PerfStats.record(PerfStats.Section.CLASSIFY, android.os.SystemClock.elapsedRealtimeNanos() - classifyStartNs)
@@ -514,7 +569,11 @@ class WhatsAppReadIndicatorScanner(
                         callback.onResult(candidates.mapNotNull { it.toFallbackLabel() })
                     }
                 }
-            )
+            if (windowOrigin != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                service.takeScreenshotOfWindow(lastWindowId, service.mainExecutor, screenshotCallback)
+            } else {
+                service.takeScreenshot(Display.DEFAULT_DISPLAY, service.mainExecutor, screenshotCallback)
+            }
         } catch (t: Throwable) {
             Log.d(TAG, "takeScreenshot threw ${t.javaClass.simpleName} — using contentDescription fallback")
             if (debug) writeChatListSummary("takeScreenshot threw ${t.javaClass.simpleName}")
@@ -529,7 +588,29 @@ class WhatsAppReadIndicatorScanner(
      * vertical strip in the message-preview line just to the right of the avatar — that's where
      * the leading ✓✓ icon lives if the row's last message was outgoing.
      */
-    private fun scanChatListPreviews(bmp: Bitmap, anchors: List<Rect>, debug: Boolean): List<Label> {
+    /** Screen area searched for a chat-list row's leading tick, below the row's timestamp. */
+    private fun chatListSearchRegion(anchor: Rect): Rect {
+        val density = service.resources.displayMetrics.density
+        val avatarRightPx = (AVATAR_END_DP * density).toInt()
+        return Rect(
+            avatarRightPx,
+            anchor.bottom + (PREVIEW_LINE_TOP_OFFSET_DP * density).toInt(),
+            avatarRightPx + (CHECKMARK_SEARCH_WIDTH_DP * density).toInt(),
+            anchor.bottom + (PREVIEW_LINE_BOTTOM_OFFSET_DP * density).toInt(),
+        )
+    }
+
+    /**
+     * @param originX screen x of the bitmap's first column (non-zero for a strip or a window capture)
+     * @param originY screen y of the bitmap's first row
+     */
+    private fun scanChatListPreviews(
+        bmp: Bitmap,
+        anchors: List<Rect>,
+        debug: Boolean,
+        originX: Int = 0,
+        originY: Int = 0,
+    ): List<Label> {
         val density = service.resources.displayMetrics.density
         val avatarRightPx = (AVATAR_END_DP * density).toInt()
         val searchWidthPx = (CHECKMARK_SEARCH_WIDTH_DP * density).toInt()
@@ -549,12 +630,7 @@ class WhatsAppReadIndicatorScanner(
         }
 
         for ((index, anchor) in anchors.withIndex()) {
-            val region = Rect(
-                avatarRightPx,
-                anchor.bottom + previewTopOffsetPx,
-                avatarRightPx + searchWidthPx,
-                anchor.bottom + previewBottomOffsetPx,
-            )
+            val region = chatListSearchRegion(anchor).apply { offset(-originX, -originY) }
             val blob = findLeadingIconBox(bmp, region)
             val line = StringBuilder()
             if (debug) {
@@ -594,7 +670,7 @@ class WhatsAppReadIndicatorScanner(
                 aspect >= DOUBLE_CHECK_ASPECT_THRESHOLD -> "Delivered"
                 else -> "Sent"
             }
-            labels += Label(box, text, isColored)
+            labels += Label(Rect(box).apply { offset(originX, originY) }, text, isColored)
             if (debug) {
                 line.append("ACCEPT: box=${box.toShortString()} ar=$ar ag=$ag ab=$ab delta=$delta aspect=${"%.2f".format(aspect)} -> $text")
                 Log.d(TAG, line.toString())
@@ -607,6 +683,59 @@ class WhatsAppReadIndicatorScanner(
             writeChatListSummary(summaryLines.joinToString("\n"))
         }
         return labels
+    }
+
+    /** Every screen area the classifiers will read pixels from. */
+    private fun pixelRegionsOnScreen(
+        candidates: List<Candidate>,
+        timestampAnchors: List<Rect>,
+        isChatListView: Boolean,
+    ): List<Rect> {
+        val regions = candidates.mapTo(ArrayList()) { it.bounds }
+        if (isChatListView && candidates.isEmpty()) timestampAnchors.mapTo(regions) { chatListSearchRegion(it) }
+        return regions
+    }
+
+    /** Software pixels of (part of) the screenshot, and the screen position of their top-left. */
+    private class Pixels(val bitmap: Bitmap, val screenX: Int, val screenY: Int)
+
+    /**
+     * Copies the screenshot's pixels to a software bitmap: the whole screenshot, or with the GPU
+     * crop experiment only the vertical strip covering [needed].
+     *
+     * @param captureX screen x of the screenshot's first column (window captures)
+     * @param captureY screen y of the screenshot's first row
+     */
+    private fun readPixels(hw: Bitmap?, needed: List<Rect>, captureX: Int, captureY: Int): Pixels? {
+        if (hw == null) return null
+        if (gpuCrop && needed.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val left = needed.minOf { it.left } - captureX
+            // +1: the classifiers clamp with an inclusive right edge, so they read that column too.
+            val right = needed.maxOf { it.right } + 1 - captureX
+            val strip = PerfStats.time(PerfStats.Section.BITMAP_COPY) {
+                (cropper ?: ScreenshotCropper().also { cropper = it }).crop(hw, left, right)
+            }
+            if (strip != null) {
+                PerfStats.inc(PerfStats.Counter.COPY_BYTES_KB, strip.bitmap.byteCount / 1024L)
+                return Pixels(strip.bitmap, captureX + strip.originX, captureY)
+            }
+        }
+        val full = PerfStats.time(PerfStats.Section.BITMAP_COPY) { hw.copy(Bitmap.Config.ARGB_8888, false) }
+            ?: return null
+        PerfStats.inc(PerfStats.Counter.COPY_BYTES_KB, full.byteCount / 1024L)
+        return Pixels(full, captureX, captureY)
+    }
+
+    /** Top-left of the given accessibility window on screen, or null if it is not reported. */
+    private fun windowOriginOnScreen(windowId: Int): android.graphics.Point? {
+        if (windowId < 0) return null
+        return try {
+            val window = service.windows.firstOrNull { it.id == windowId } ?: return null
+            val bounds = Rect().also { window.getBoundsInScreen(it) }
+            android.graphics.Point(bounds.left, bounds.top)
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     private fun writeChatListSummary(summary: String) {
@@ -950,6 +1079,12 @@ class WhatsAppReadIndicatorScanner(
     companion object {
         const val PREF_WHATSAPP_CHATLIST_DEBUG = "whatsapp_chatlist_debug"
         const val PREF_WHATSAPP_CONVO_DEBUG = "whatsapp_convo_debug"
+
+        // Performance experiments, Developer settings. Off by default until measured.
+        const val PREF_PERF_GPU_CROP = "perf_gpu_crop"
+        const val PREF_PERF_TREE_PREFETCH = "perf_tree_prefetch"
+        // Also read by MainService: keep labels up during rescans (needs the window capture).
+        const val PREF_PERF_KEEP_LABELS = "perf_keep_labels"
         private const val TAG = "WhatsAppScanner"
         private const val MAX_TREE_DEPTH = 64
         private const val SAMPLE_STRIDE = 6
