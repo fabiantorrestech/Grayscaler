@@ -139,6 +139,18 @@
             </intent-filter>
         </service>
 
+        <!-- Second tile: opens the pause popup (same as the "Pause Popup" launcher shortcut). -->
+        <service
+            android:name=".PauseTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_qs_tile"
+            android:label="@string/tile_pause_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
