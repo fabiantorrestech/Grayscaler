@@ -8,8 +8,8 @@ name: Build debug APK
 #   - The run's "Artifacts" section: the same APK inside a zip (requires being signed in).
 #
 # Signing: debug and release builds use the personal release key from the PERSONAL_KEYSTORE_*
-# secrets (see fabiantorrestech/android-apps), so this test build, PC builds and the released app
-# install over each other. Without those secrets the build falls back to a throwaway debug key
+# secrets (see fabiantorrestech/android-apps). Debug builds are a separate app (id + ".debug", ADR 7
+# in android-apps) that installs next to the released one. Without those secrets the build falls back to a throwaway debug key
 # (or DEBUG_KEYSTORE_BASE64, if set).
 
 on:
@@ -120,6 +120,7 @@ jobs:
           TAG: grayscalerplus
           NAME: GrayScaler+
           APK: GrayScalerPlus.apk
+          DEBUG_APK: GrayScalerPlus-debug.apk
         run: |
           if [ -z "$ORG_GRADLE_PROJECT_PERSONAL_KEYSTORE_FILE" ] || [ -z "$GH_TOKEN" ]; then
             echo "::warning::Release key or APP_HUB_TOKEN missing: not publishing to the hub"
@@ -127,6 +128,7 @@ jobs:
           fi
           ./gradlew :app:assembleRelease --console=plain
           cp app/build/outputs/apk/release/*.apk "$APK"
+          cp app/build/outputs/apk/debug/app-debug.apk "$DEBUG_APK"
           aapt2="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/aapt2"
           badging="$("$aapt2" dump badging "$APK" | head -1)"
           code="$(echo "$badging" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p")"
@@ -134,8 +136,8 @@ jobs:
           title="$NAME $version ($code)"
           notes="Built by CI from ${GITHUB_REPOSITORY}@${GITHUB_SHA::7} (${GITHUB_REF_NAME}) on $(date -u '+%Y-%m-%d %H:%M') UTC."
           if gh release view "$TAG" --repo "$HUB" > /dev/null 2>&1; then
-            gh release upload "$TAG" "$APK" --repo "$HUB" --clobber
+            gh release upload "$TAG" "$APK" "$DEBUG_APK" --repo "$HUB" --clobber
             gh release edit "$TAG" --repo "$HUB" --title "$title" --notes "$notes"
           else
-            gh release create "$TAG" "$APK" --repo "$HUB" --target main --title "$title" --notes "$notes" --latest=false
+            gh release create "$TAG" "$APK" "$DEBUG_APK" --repo "$HUB" --target main --title "$title" --notes "$notes" --latest=false
           fi

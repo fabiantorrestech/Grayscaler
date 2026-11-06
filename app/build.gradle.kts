@@ -39,8 +39,9 @@ android {
 
     buildTypes {
         debug {
-            // Same key as release builds (when it's set), so the CI test build (ci-latest), PC
-            // builds and the released app all install over each other.
+            // A separate app next to the released one (ADR 7 in android-apps), signed with the
+            // same key as release builds when it's set.
+            applicationIdSuffix = ".debug"
             signingConfigs.findByName("release")?.let { signingConfig = it }
         }
         release {
