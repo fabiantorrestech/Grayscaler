@@ -534,7 +534,8 @@ fun PauseOverlayContent(
     }
 }
 
-private val QuickPauseDurations = listOf(
+// Also used for the status notification's pause-button choices (StatusNotification, PauseScreen).
+internal val QuickPauseDurations = listOf(
     "5s" to 5L, "15s" to 15L, "30s" to 30L, "1m" to 60L,
     "2m" to 120L, "5m" to 300L, "10m" to 600L, "15m" to 900L,
     "30m" to 1800L, "1h" to 3600L

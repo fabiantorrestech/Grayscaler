@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -78,6 +79,11 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
     var persistentOverlayEnabled by remember {
         mutableStateOf(prefs.getBoolean("persistent_overlay_mode", false))
     }
+    var persistentNotifEnabled by remember {
+        mutableStateOf(StatusNotification.isPersistentEnabled(context))
+    }
+    var notifPresetSeconds by remember { mutableStateOf(StatusNotification.pausePresetSeconds(context)) }
+    var notifPresetExpanded by remember { mutableStateOf(false) }
     var pauseOverlayBlurAnimationEnabled by remember {
         mutableStateOf(prefs.getBoolean(PREF_PAUSE_OVERLAY_BLUR_ANIMATION_ENABLED, true))
     }
@@ -389,8 +395,54 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
                         onCheckedChange = { enabled ->
                             countdownNotifEnabled = enabled
                             prefs.edit().putBoolean("pause_countdown_notif_enabled", enabled).apply()
+                            StatusNotification.refresh(context)
                         }
                     )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text("Notification pause button", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "How long the notification's Pause button pauses for",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    ExposedDropdownMenuBox(
+                        expanded = notifPresetExpanded,
+                        onExpandedChange = { notifPresetExpanded = it },
+                        modifier = Modifier.width(120.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = StatusNotification.formatDuration(notifPresetSeconds),
+                            onValueChange = {},
+                            readOnly = true,
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(notifPresetExpanded) },
+                            modifier = Modifier.menuAnchor(),
+                            singleLine = true
+                        )
+                        ExposedDropdownMenu(
+                            expanded = notifPresetExpanded,
+                            onDismissRequest = { notifPresetExpanded = false }
+                        ) {
+                            QuickPauseDurations.forEach { (label, seconds) ->
+                                DropdownMenuItem(
+                                    text = { Text(label) },
+                                    onClick = {
+                                        notifPresetSeconds = seconds
+                                        notifPresetExpanded = false
+                                        prefs.edit().putLong(StatusNotification.PREF_PAUSE_PRESET_SECONDS, seconds).apply()
+                                        StatusNotification.refresh(context)
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
             } else {
                 Card(
@@ -412,6 +464,31 @@ fun PauseScreen(onBack: () -> Unit, onOpenPermissions: () -> Unit) {
                         TextButton(onClick = onOpenPermissions) { Text("Open") }
                     }
                 }
+            }
+
+            // Outside the permission check: the foreground service works without notification
+            // permission (Android just hides the notification).
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text("Persistent notification", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Keeps the service alive on aggressive battery savers. Not needed on most phones once Accessibility is on.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = persistentNotifEnabled,
+                    onCheckedChange = { enabled ->
+                        persistentNotifEnabled = enabled
+                        // MainService listens for this key and starts or stops the foreground state.
+                        prefs.edit().putBoolean(StatusNotification.PREF_PERSISTENT_ENABLED, enabled).apply()
+                    }
+                )
             }
 
             HorizontalDivider()

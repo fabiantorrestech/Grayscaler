@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.content.pm.ServiceInfo
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -27,6 +28,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Toast
 import androidx.annotation.RequiresApi
+import androidx.core.app.ServiceCompat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -259,6 +261,7 @@ class MainService : AccessibilityService() {
                 updateEventSubscription()
             }
             WhatsAppReadIndicatorScanner.PREF_PERF_KEEP_LABELS -> keepLabelsDuringRescan = readKeepLabels(prefs)
+            StatusNotification.PREF_PERSISTENT_ENABLED -> updateForegroundState()
         }
     }
 
@@ -317,6 +320,7 @@ class MainService : AccessibilityService() {
         // Accessibility settings, or an OS-initiated restart, the system Secure value may no longer
         // match the master switch and nothing else re-applies it until the next window event.
         instance = this
+        updateForegroundState()
         updateEventSubscription()
         GrayscaleLog.log(this, "serviceConnected", "reconciling grayscale state")
         GrayscaleStateManager.invalidate(this, "service_connected")
@@ -352,8 +356,40 @@ class MainService : AccessibilityService() {
         GrayscaleLog.log(this, "reset", "transient service state cleared")
     }
 
+    /**
+     * Runs the service in the foreground, with the status notification, while the persistent
+     * notification setting is on. The system already binds an accessibility service at high
+     * priority; this is extra protection against OEM battery savers that kill it anyway.
+     */
+    private fun updateForegroundState() {
+        if (!StatusNotification.isPersistentEnabled(this)) {
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            // Puts back a plain pause notification if a pause is active.
+            StatusNotification.refresh(this)
+            return
+        }
+        // The specialUse type only exists (and is only required) from Android 14.
+        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        } else {
+            0
+        }
+        try {
+            ServiceCompat.startForeground(this, StatusNotification.NOTIF_ID, StatusNotification.build(this), type)
+        } catch (e: Exception) {
+            // ForegroundServiceStartNotAllowedException (Android 12+) or SecurityException. The
+            // service keeps working without foreground status; still show the notification.
+            Log.w(TAG, "startForeground failed", e)
+            GrayscaleLog.log(this, "foreground", "startForeground failed: ${e.javaClass.simpleName}: ${e.message}")
+            StatusNotification.refresh(this)
+        }
+    }
+
     override fun onDestroy() {
         if (instance === this) instance = null
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        // instance is already null, so this keeps the notification only if a pause is active.
+        StatusNotification.refresh(this)
         graceHandler.removeCallbacks(graceRunnable)
         graceHandler.removeCallbacks(pauseEndRunnable)
         cancelStaleRecheck()

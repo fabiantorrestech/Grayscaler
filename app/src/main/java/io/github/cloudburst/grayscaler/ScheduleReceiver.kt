@@ -1,19 +1,10 @@
 package io.github.cloudburst.grayscaler
 
 import android.app.AlarmManager
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Build
-import android.os.SystemClock
-import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 class ScheduleReceiver : BroadcastReceiver() {
 
@@ -27,11 +18,11 @@ class ScheduleReceiver : BroadcastReceiver() {
             ACTION_BEDTIME_START -> onBedtimeBoundary(context)
             ACTION_BEDTIME_END -> onBedtimeBoundary(context)
             ACTION_SET_ENABLED -> onSetEnabled(context, intent)
-            ACTION_TOGGLE_ENABLED -> onToggleEnabled(context)
+            ACTION_TOGGLE_ENABLED -> onToggleEnabled(context, intent)
             ACTION_PAUSE_GRAYSCALER -> onPauseGrayscaler(context)
             ACTION_APPLY_PAUSE -> onApplyPause(context, intent)
             ACTION_APPLY_SESSION_PAUSE -> onApplySessionPause(context, intent)
-            ACTION_PAUSE_END -> onPauseEnd(context)
+            ACTION_PAUSE_END -> onPauseEnd(context, intent)
             ACTION_PAUSE_NOTIFY_COUNTDOWN -> onPauseNotifyCountdown(context, intent)
         }
     }
@@ -45,7 +36,7 @@ class ScheduleReceiver : BroadcastReceiver() {
                 .putString(PREF_SESSION_PAUSE_PKG, "")
                 .putLong(PREF_SESSION_PAUSE_START_MS, 0L)
                 .commit()
-            cancelNotifications(context)
+            StatusNotification.refresh(context)
         }
         val store = ScheduleStore(context)
         store.load()
@@ -103,8 +94,9 @@ class ScheduleReceiver : BroadcastReceiver() {
         GrayscalerToggleCoordinator.setEnabled(context, enabled, "broadcast_set_enabled")
     }
 
-    private fun onToggleEnabled(context: Context) {
-        GrayscalerToggleCoordinator.toggle(context, "widget_toggle")
+    private fun onToggleEnabled(context: Context, intent: Intent) {
+        val reason = intent.getStringExtra(EXTRA_REASON) ?: "widget_toggle"
+        GrayscalerToggleCoordinator.toggle(context, reason)
     }
 
     private fun onPauseGrayscaler(context: Context) {
@@ -130,7 +122,6 @@ class ScheduleReceiver : BroadcastReceiver() {
         // Clean up any existing pause before overwriting
         cancelPauseEndAlarm(context)
         cancelPauseNotifyAlarm(context)
-        cancelNotifications(context)
 
         // A timed pause replaces any session pause. Leaving pause_type at "session" kept the
         // session rules (and its grace timer) alive underneath the new timed pause.
@@ -153,7 +144,12 @@ class ScheduleReceiver : BroadcastReceiver() {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         alarmManager.set(AlarmManager.RTC_WAKEUP, pauseUntil, pi)
 
-        postPauseNotification(context, seconds, pauseUntil, prefs)
+        // Long pauses show "Re-enables at …" first; this alarm switches the notification to a
+        // live countdown for the last 5 minutes.
+        if (seconds * 1000L > StatusNotification.COUNTDOWN_WINDOW_MS) {
+            schedulePauseNotifyTransition(context, pauseUntil)
+        }
+        StatusNotification.refresh(context)
 
         // Update widget and schedule tick if live countdown is enabled
         GrayscalerWidgetReceiver.triggerUpdate(context)
@@ -168,7 +164,6 @@ class ScheduleReceiver : BroadcastReceiver() {
 
         cancelPauseEndAlarm(context)
         cancelPauseNotifyAlarm(context)
-        cancelNotifications(context)
 
         if (pkg != null) {
             val startMs = System.currentTimeMillis()
@@ -178,7 +173,6 @@ class ScheduleReceiver : BroadcastReceiver() {
                 .putLong(PREF_SESSION_PAUSE_START_MS, startMs)
                 .commit()
             GrayscaleStateManager.invalidate(context, "session_pause")
-            postSessionActiveNotification(context, pkg, startMs)
         } else {
             prefs.edit()
                 .putString(PREF_PAUSE_TYPE, "pending_session")
@@ -186,14 +180,17 @@ class ScheduleReceiver : BroadcastReceiver() {
                 .putLong(PREF_SESSION_PAUSE_START_MS, 0L)
                 .commit()
             GrayscaleStateManager.invalidate(context, "pending_session")
-            postSessionPendingNotification(context)
         }
+        StatusNotification.refresh(context)
 
         GrayscalerWidgetReceiver.cancelTickAlarm(context)
         GrayscalerWidgetReceiver.triggerUpdate(context)
     }
 
-    private fun onPauseEnd(context: Context) {
+    private fun onPauseEnd(context: Context, intent: Intent) {
+        // The notification's "Cancel pause" button is always shown; with no pause active it must
+        // not reset anything. Alarms and other callers send no extra and always clear.
+        if (intent.getBooleanExtra(EXTRA_ONLY_IF_PAUSED, false) && !isPauseActive(context)) return
         clearAllPauseState(context)
         GrayscaleStateManager.invalidate(context, "pause_end")
         GrayscalerWidgetReceiver.triggerUpdate(context)
@@ -208,140 +205,29 @@ class ScheduleReceiver : BroadcastReceiver() {
         val storedUntil = prefs.getLong("pause_until", 0L)
         if (storedUntil != pauseUntil) return
 
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.cancel(NOTIF_ID_STATIC)
-
-        val cancelPi = buildCancelPausePendingIntent(context)
-        postCountdownOrStatic(context, pauseUntil, nm, cancelPi, prefs)
+        // Now inside the last 5 minutes, so the notification switches to the live countdown.
+        StatusNotification.refresh(context)
     }
 
-    private fun postSessionActiveNotification(context: Context, pkg: String, startMs: Long) {
-        if (!hasNotificationPermission(context)) return
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val cancelPi = buildCancelPausePendingIntent(context)
-        val appLabel = try {
-            context.packageManager.getApplicationLabel(
-                context.packageManager.getApplicationInfo(pkg, 0)
-            ).toString()
-        } catch (_: Exception) { pkg }
-        val elapsedMs = System.currentTimeMillis() - startMs
-        val base = SystemClock.elapsedRealtime() - elapsedMs
-        val notif = NotificationCompat.Builder(context, CHANNEL_ID_COUNTDOWN)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Grayscaler+ Paused · $appLabel session")
-            .setUsesChronometer(true)
-            .setChronometerCountDown(false)
-            .setWhen(base)
-            .setShowWhen(true)
-            .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .addAction(0, "Cancel Pause", cancelPi)
-            .build()
-        nm.notify(NOTIF_ID_COUNTDOWN, notif)
-    }
-
-    private fun postSessionPendingNotification(context: Context) {
-        if (!hasNotificationPermission(context)) return
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val cancelPi = buildCancelPausePendingIntent(context)
-        val notif = NotificationCompat.Builder(context, CHANNEL_ID_STATIC)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Grayscaler+ · Waiting for next app…")
-            .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .addAction(0, "Cancel", cancelPi)
-            .build()
-        nm.notify(NOTIF_ID_STATIC, notif)
-    }
-
-    private fun postPauseNotification(context: Context, seconds: Long, pauseUntil: Long, prefs: android.content.SharedPreferences) {
-        if (!hasNotificationPermission(context)) return
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val cancelPi = buildCancelPausePendingIntent(context)
-
-        if (seconds > 300) {
-            val fmt = SimpleDateFormat("h:mm a", Locale.getDefault())
-            val notif = NotificationCompat.Builder(context, CHANNEL_ID_STATIC)
-                .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle("Grayscaler+ Paused")
-                .setContentText("Paused at ${fmt.format(Date())}. Will re-enable at ${fmt.format(Date(pauseUntil))}.")
-                .setOngoing(true)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setTimeoutAfter(pauseUntil - System.currentTimeMillis())
-                .addAction(0, "Cancel Pause", cancelPi)
-                .build()
-            nm.notify(NOTIF_ID_STATIC, notif)
-
-            // Schedule 5-min transition alarm
-            val transitionTime = pauseUntil - 5 * 60 * 1000L
-            val transitionIntent = Intent(context, ScheduleReceiver::class.java).apply {
-                action = ACTION_PAUSE_NOTIFY_COUNTDOWN
-                putExtra(EXTRA_PAUSE_UNTIL, pauseUntil)
-            }
-            val transitionPi = PendingIntent.getBroadcast(
-                context, PAUSE_NOTIFY_TRANSITION_REQUEST_CODE, transitionIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager)
-                .set(AlarmManager.RTC_WAKEUP, transitionTime, transitionPi)
-        } else {
-            postCountdownOrStatic(context, pauseUntil, nm, cancelPi, prefs)
+    private fun schedulePauseNotifyTransition(context: Context, pauseUntil: Long) {
+        val transitionTime = pauseUntil - StatusNotification.COUNTDOWN_WINDOW_MS
+        val transitionIntent = Intent(context, ScheduleReceiver::class.java).apply {
+            action = ACTION_PAUSE_NOTIFY_COUNTDOWN
+            putExtra(EXTRA_PAUSE_UNTIL, pauseUntil)
         }
-    }
-
-    private fun postCountdownOrStatic(
-        context: Context,
-        pauseUntil: Long,
-        nm: NotificationManager,
-        cancelPi: PendingIntent,
-        prefs: android.content.SharedPreferences
-    ) {
-        val countdownEnabled = prefs.getBoolean("pause_countdown_notif_enabled", true)
-        val remainingMs = pauseUntil - System.currentTimeMillis()
-        if (countdownEnabled) {
-            val notif = NotificationCompat.Builder(context, CHANNEL_ID_COUNTDOWN)
-                .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle("Grayscaler+ re-enabling soon")
-                .setUsesChronometer(true)
-                .setChronometerCountDown(true)
-                .setWhen(pauseUntil)
-                .setOngoing(true)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setTimeoutAfter(remainingMs)
-                .addAction(0, "Cancel Pause", cancelPi)
-                .build()
-            nm.notify(NOTIF_ID_COUNTDOWN, notif)
-        } else {
-            val fmt = SimpleDateFormat("h:mm a", Locale.getDefault())
-            val notif = NotificationCompat.Builder(context, CHANNEL_ID_STATIC)
-                .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle("Grayscaler+ Paused")
-                .setContentText("Will re-enable at ${fmt.format(Date(pauseUntil))}.")
-                .setOngoing(true)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setTimeoutAfter(remainingMs)
-                .addAction(0, "Cancel Pause", cancelPi)
-                .build()
-            nm.notify(NOTIF_ID_STATIC, notif)
-        }
-    }
-
-    private fun buildCancelPausePendingIntent(context: Context): PendingIntent {
-        val cancelIntent = Intent(context, ScheduleReceiver::class.java).apply {
-            action = ACTION_PAUSE_END
-        }
-        return PendingIntent.getBroadcast(
-            context, PAUSE_CANCEL_NOTIF_REQUEST_CODE, cancelIntent,
+        val transitionPi = PendingIntent.getBroadcast(
+            context, PAUSE_NOTIFY_TRANSITION_REQUEST_CODE, transitionIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager)
+            .set(AlarmManager.RTC_WAKEUP, transitionTime, transitionPi)
     }
 
-    private fun hasNotificationPermission(context: Context): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(
-                context, android.Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
-        } else true
+    private fun isPauseActive(context: Context): Boolean {
+        val prefs = context.getSharedPreferences("grayscaler_prefs", Context.MODE_PRIVATE)
+        val pauseType = prefs.getString(PREF_PAUSE_TYPE, "timed") ?: "timed"
+        return prefs.getLong("pause_until", 0L) > System.currentTimeMillis() ||
+            pauseType == "session" || pauseType == "pending_session"
     }
 
     companion object {
@@ -363,27 +249,23 @@ class ScheduleReceiver : BroadcastReceiver() {
         const val PREF_SESSION_GRACE_PERIOD_MS = "session_grace_period_ms"
         const val SESSION_GRACE_PERIOD_DEFAULT_MS = 20_000L
 
-        const val CHANNEL_ID_STATIC = "grayscaler_pause_static"
-        const val CHANNEL_ID_COUNTDOWN = "grayscaler_pause_countdown"
-
         const val EXTRA_SCHEDULE_ID = "schedule_id"
         const val EXTRA_DAY = "day"
         const val EXTRA_ENABLED = "enabled"
         const val EXTRA_MINUTES = "minutes"
         const val EXTRA_SECONDS = "seconds"
         const val EXTRA_SESSION_PKG = "session_pkg"
+        const val EXTRA_REASON = "reason"
+        const val EXTRA_ONLY_IF_PAUSED = "only_if_paused"
         private const val EXTRA_PAUSE_UNTIL = "pause_until"
 
         private const val PAUSE_END_REQUEST_CODE = 9999
         private const val PAUSE_NOTIFY_TRANSITION_REQUEST_CODE = 9998
-        private const val PAUSE_CANCEL_NOTIF_REQUEST_CODE = 9997
-
-        const val NOTIF_ID_STATIC = 1001
-        const val NOTIF_ID_COUNTDOWN = 1002
 
         /**
          * Cancels every kind of pause (timed, session, pending session) and everything attached to
-         * it: end/notify alarms, notifications, widget tick alarm. Does NOT re-apply to the OS or
+         * it: end/notify alarms, widget tick alarm, and the pause shown in the status notification.
+         * Does NOT re-apply to the OS or
          * refresh widgets; callers decide how to follow up.
          */
         internal fun clearAllPauseState(context: Context) {
@@ -397,7 +279,7 @@ class ScheduleReceiver : BroadcastReceiver() {
 
             cancelPauseEndAlarm(context)
             cancelPauseNotifyAlarm(context)
-            cancelNotifications(context)
+            StatusNotification.refresh(context)
             GrayscalerWidgetReceiver.cancelTickAlarm(context)
         }
 
@@ -419,12 +301,6 @@ class ScheduleReceiver : BroadcastReceiver() {
             ) ?: return
             (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(pi)
             pi.cancel()
-        }
-
-        internal fun cancelNotifications(context: Context) {
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.cancel(NOTIF_ID_STATIC)
-            nm.cancel(NOTIF_ID_COUNTDOWN)
         }
     }
 }

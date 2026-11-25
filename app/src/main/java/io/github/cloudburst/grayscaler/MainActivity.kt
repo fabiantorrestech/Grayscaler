@@ -153,24 +153,6 @@ class MainActivity : ComponentActivity() {
         webShortcutStore = WebShortcutStore(this)
         webShortcutStore.load()
 
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            val nm = getSystemService(android.app.NotificationManager::class.java)
-            nm.createNotificationChannel(
-                android.app.NotificationChannel(
-                    ScheduleReceiver.CHANNEL_ID_STATIC,
-                    "Grayscaler+ Paused",
-                    android.app.NotificationManager.IMPORTANCE_LOW
-                )
-            )
-            nm.createNotificationChannel(
-                android.app.NotificationChannel(
-                    ScheduleReceiver.CHANNEL_ID_COUNTDOWN,
-                    "Grayscaler+ Countdown",
-                    android.app.NotificationManager.IMPORTANCE_LOW
-                )
-            )
-        }
-
         thread {
             store.preloadApps()
             webShortcutStore.refreshLauncherEntries()

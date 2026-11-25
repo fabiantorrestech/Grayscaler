@@ -219,7 +219,7 @@ fun PermissionsScreen(onBack: () -> Unit) {
                         Column(modifier = Modifier.padding(start = 12.dp)) {
                             Text("Post Notifications", style = MaterialTheme.typography.bodyLarge)
                             Text(
-                                if (hasNotifPermission) "Granted" else "Required for pause timer notification",
+                                if (hasNotifPermission) "Granted" else "Required for the status notification",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = if (hasNotifPermission) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
                             )

@@ -16,5 +16,9 @@ class GrayscalerApplication : Application() {
         // visible here; their stores request a backup from save() instead.
         getSharedPreferences("grayscaler_prefs", MODE_PRIVATE)
             .registerOnSharedPreferenceChangeListener(settingsListener)
+
+        // Here rather than in MainActivity: after an update or a reboot the accessibility service
+        // can start, and post its foreground notification, before the app UI is ever opened.
+        StatusNotification.ensureChannel(this)
     }
 }

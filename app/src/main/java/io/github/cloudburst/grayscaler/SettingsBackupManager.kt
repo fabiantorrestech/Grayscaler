@@ -1,6 +1,5 @@
 package io.github.cloudburst.grayscaler
 
-import android.app.NotificationManager
 import android.content.Context
 import android.net.Uri
 import android.util.Base64
@@ -228,9 +227,7 @@ object SettingsBackupManager {
             ScheduleReceiver.ACTION_PAUSE_NOTIFY_COUNTDOWN,
             PAUSE_NOTIFY_TRANSITION_REQUEST_CODE
         )
-        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.cancel(ScheduleReceiver.NOTIF_ID_STATIC)
-        notificationManager.cancel(ScheduleReceiver.NOTIF_ID_COUNTDOWN)
+        StatusNotification.refresh(context)
     }
 
     private fun cancelPauseAlarm(
